@@ -244,4 +244,3 @@ def build_monthly_metrics(frame: pd.DataFrame) -> pd.DataFrame:
     )
     monthly["pct_anomalies"] = np.where(monthly["nb_or"] > 0, monthly["anomalies"] / monthly["nb_or"] * 100, 0)
     return monthly
-dashboard
