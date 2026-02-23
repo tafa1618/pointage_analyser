@@ -1,0 +1,19 @@
+﻿=== VOLUMES ===
+IE  unique OR: 267  (total lignes: 267)
+Pointage unique OR: 285  (total lignes: 8528)
+BO  unique OR: 21  (total lignes: 53)
+
+=== INTERSECTIONS ===
+python : Traceback (most recent call last):
+Au caractère Ligne:1 : 1
++ python inspect_joins.py 2>&1 | Out-File -Encoding utf8 inspect_joins_ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\Pointage Analyzer\inspect_joins.py", line 30, in <module>
+    print(f"IE \u2229 Pointage : {len(ie_pt)} OR en commun")
+  File "C:\Users\gaye3\AppData\Local\Programs\Python\Python311\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2229' in position 3: character maps to <undefined>

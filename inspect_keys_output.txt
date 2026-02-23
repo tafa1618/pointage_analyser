@@ -1,0 +1,76 @@
+﻿=== IE - toutes colonnes (sample values) ===
+  'xxx': [Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00')]
+  'Nom client': ['NEEMBA SENEGAL', 'NEEMBA SENEGAL', 'NEEMBA SENEGAL']
+  'Type OR': ['262-CONSO CVA LOCATION', '262-CONSO CVA LOCATION', '262-CONSO CVA LOCATION']
+  'Nature': ['CES', 'CES', 'CES']
+  'Position': ['EC', 'EC', 'EC']
+  'N░ de sÚrie': ['SZL21161', 'SGW02608', 'TJT10110']
+  'DÚsignation matÚriel': ['140K', '966GC', '333-07']
+  'Nature matÚriel': ['GRAD-NIVELEUSE', 'WHLO-CHARGEUSE SUR PNEUS', 'HEXC-PELLE HYDRAULIQUE']
+  'Type intervention': ['CMA-CONTRAT MACHINE', 'CMA-CONTRAT MACHINE', 'CMA-CONTRAT MACHINE']
+  'Localisation': ['EXTERIEUR', 'EXTERIEUR', 'EXTERIEUR']
+
+=== IE - col xxx dtype ===
+datetime64[ns] [Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00')]
+
+=== IE - cherche OR (int 8 chiffres) ===
+
+=== POINTAGE OR key value_counts (top 20) ===
+OR (NumÚro)
+0           5592
+11030569     216
+python : Traceback (most recent call last):
+Au caractère Ligne:1 : 1
++ python inspect_keys.py 2>&1 | Out-File -Encoding utf8 inspect_keys_ou ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\Pointage Analyzer\inspect_keys.py", line 49, in <module>
+11030565     176
+11030566     136
+11030568     128
+11030567     104
+11030570      86
+11030315      66
+11029948      65
+11030850      61
+11030598      49
+11030584      46
+11030093      38
+11030849      36
+11030292      36
+11027972      36
+11029617      35
+11030855      34
+11030604      34
+11029620      34
+
+=== BO N░ OR (Segment) value_counts ===
+N░ OR (Segment)
+11031020    5
+11031051    5
+11031053    5
+11031055    5
+11031056    5
+11031059    3
+11031030    3
+11031033    2
+11031032    2
+11031029    2
+11031028    2
+11031019    2
+11031018    2
+11031034    2
+11031037    2
+11031027    1
+11031026    1
+11031038    1
+11031036    1
+11031025    1
+
+    print(f"=== JOIN CHECK: Pointage OR \u2229 BO OR ===")
+  File "C:\Users\gaye3\AppData\Local\Programs\Python\Python311\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2229' in position 28: character maps to <undefined>

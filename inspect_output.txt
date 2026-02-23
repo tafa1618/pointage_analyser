@@ -1,0 +1,146 @@
+﻿============================================================
+IE ù colonnes completes
+============================================================
+  [0] 'xxx'
+  [1] 'Nom client'
+  [2] 'Type OR'
+  [3] 'Nature'
+  [4] 'Position'
+  [5] 'N░ de sÚrie'
+  [6] 'DÚsignation matÚriel'
+  [7] 'Nature matÚriel'
+  [8] 'Type intervention'
+  [9] 'Localisation'
+  Shape: (217, 10)
+
+============================================================
+IE ù col [0] (xxx) = OR key ?
+============================================================
+[Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-20 00:00:00'), Timestamp('2026-02-19 00:00:00'), Timestamp('2026-02-19 00:00:00'), Timestamp('2026-02-19 00:00:00')]
+
+============================================================
+IE ù Position valeurs uniques
+============================================================
+Position
+EC    113
+CP     96
+AF      7
+TT      1
+
+============================================================
+POINTAGE ù colonnes completes
+============================================================
+  [0] 'SalariÚ - NumÚro'
+  [1] 'Saisie heures - Date'
+  [2] 'SalariÚ - Nom'
+  [3] 'SalariÚ - Equipe'
+  [4] 'SalariÚ - Equipe(Nom)'
+  [5] 'Type heure (LibellÚ)'
+  [6] 'Heure realisee'
+  [7] 'OR (NumÚro)'
+  [8] 'Intervention - Nature (LibellÚ)'
+  [9] 'Intervention - Type opÚration'
+  [10] 'Type heure'
+  [11] "Type d'heure salariÚ"
+  [12] 'Sce dÚbitÚ'
+  [13] 'Succursale'
+  [14] 'Code pays'
+  [15] 'CatÚgorie_SalariÚ'
+  [16] 'Categorie Heure'
+  [17] 'Non Facturable'
+  [18] 'Facturable'
+  [19] 'AllouÚe'
+  [20] 'Hr_travaillÚe'
+  [21] 'Hr_Totale'
+  [22] 'SalariÚ - Equipe(Nom) - Copier'
+  Shape: (8528, 23)
+
+============================================================
+POINTAGE ù col OR (index 7) : OR key
+============================================================
+  Nom: 'OR (NumÚro)'
+  Uniques: 285  |  NaN: 0
+  Samples: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+============================================================
+POINTAGE ù Technicien / Equipe / Heures sample
+============================================================
+   SalariÚ - NumÚro                SalariÚ - Nom  SalariÚ - Equipe SalariÚ - Equipe(Nom)  Heure realisee  Hr_travaillÚe  Hr_Totale
+0               508      FALL SERIGNE (SN000228)              9912     Exterieur Machine            8.00            NaN       8.00
+1               513  GOUDIABY MAMADOU (SN000176)              9912     Exterieur Machine            8.00           8.00       8.00
+2               551   NDIAYE MANDIAYE (SN000172)              9912     Exterieur Machine            8.00            NaN       8.00
+3              1322           OUEDRAOGO ALASSANE              9924         DetachÚ Mines            8.00            NaN       8.00
+4              5098      FALL MAHMOUT (SN000671)              9917      Remontage Moteur            0.20           0.20       0.20
+5              5098      FALL MAHMOUT (SN000671)              9917      Remontage Moteur            3.30           3.30       3.30
+6              5098      FALL MAHMOUT (SN000671)              9917      Remontage Moteur            0.13           0.13       0.13
+7              5098      FALL MAHMOUT (SN000671)              9917      Remontage Moteur            1.30            NaN       1.30
+
+============================================================
+BO ù colonnes completes
+============================================================
+  [0] 'Pays SociÚtÚ'
+  [1] 'SociÚtÚ'
+  [2] 'Service (Lignes)'
+  [3] 'Service facturÚ (Lignes)'
+  [4] 'Date CrÚation OR (Segment)'
+  [5] 'Nom Client OR (or)'
+  [6] 'N░ OR (Segment)'
+  [7] 'N░ Facture (Lignes)'
+  [8] 'Date Facture (Lignes)'
+  [9] 'Date Cl¶ture (Segment)'
+  [10] 'Pointage derniÞre date (Segment)'
+  [11] 'N░ intervention (Segment)'
+  [12] 'Description Intervention (Segment)'
+  [13] 'SMU  Compteur Ó la crÚation (Segment)'
+  [14] 'SMU  Compteur en cours (Segment)'
+  [15] 'SMU  Compteur Ó la cloture (Segment)'
+  [16] 'SMCS Code Composant (Segment)'
+  [17] 'SMCS Code Job (Segment)'
+  [18] 'Type Intervention (Segment)'
+  [19] 'Type heure 1 (Segment)'
+  [20] 'Type heure 2 (Segment)'
+  [21] 'Travail Ó faire (Segment)'
+  [22] 'Utilisation Tbm (Segment)'
+  [23] 'Localisation (Segment)'
+  [24] 'ActivitÚ Service (Segment)'
+  [25] "ModÞle de l'Úquipement (Segment)"
+  [26] 'NumÚro sÚrie Equipement (Segment)'
+  [27] 'Type matÚriel'
+  [28] 'ActivitÚ Client (segment)'
+  [29] 'LibellÚ ActivitÚ Service (Segment)'
+  [30] 'Temps vendu (OR)'
+  [31] 'Temps prÚvu devis (OR)'
+  [32] 'DurÚe pointage agents productifs (OR)'
+  [33] 'DurÚe pointage total (OR)'
+  [34] "Constructeur de l'Úquipement"
+  [35] 'QtÚ demandÚe client  (OR)'
+  [36] 'QtÚ FacturÚe (OR)'
+  [37] 'QtÚ LivrÚe (OR)'
+  [38] 'Dossier (Segment)'
+  [39] 'Code Dossier (Segment)'
+  [40] 'Montant divers (OR)'
+  [41] 'Montant Frais net (OR)'
+  [42] 'Montant Mo (OR)'
+  [43] 'Montant Pieces net (OR)'
+  [44] 'Montant Total (OR)'
+  Shape: (53, 45)
+
+============================================================
+BO ù col N░ OR (index 6)
+============================================================
+  Nom: 'N░ OR (Segment)'
+  Uniques: 21  |  NaN: 0
+  Samples: [11031020, 11031020, 11031020, 11031020, 11031020, 11031051, 11031051, 11031051, 11031051, 11031051]
+
+============================================================
+BO ù colonnes financieres (index 30..44)
+============================================================
+       Temps vendu (OR)  Temps prÚvu devis (OR)  DurÚe pointage agents productifs (OR)  DurÚe pointage total (OR)  QtÚ demandÚe client  (OR)  QtÚ FacturÚe (OR)  QtÚ LivrÚe (OR)  Code Dossier (Segment)  Montant divers (OR)  Montant Frais net (OR)  Montant Mo (OR)  Montant Pieces net (OR)  Montant Total (OR)
+count              53.0               53.000000                                   53.0                       53.0                  53.000000               53.0        53.000000               53.000000                 53.0               53.000000     5.300000e+01                53.000000        5.300000e+01
+mean                0.0                4.130189                                    0.0                        0.0                  12.130189                0.0         8.037736              278.000000                  0.0             9664.811321     2.596545e+05              3019.094340        2.723384e+05
+std                 0.0                4.837173                                    0.0                        0.0                  25.552664                0.0        25.402122               87.832007                  0.0            39645.921581     6.670975e+05             21979.338559        6.649643e+05
+min                 0.0                0.000000                                    0.0                        0.0                  -1.000000                0.0         0.000000              110.000000                  0.0                0.000000     0.000000e+00                 0.000000        0.000000e+00
+25%                 0.0                1.000000                                    0.0                        0.0                   1.000000                0.0         0.000000              260.000000                  0.0                0.000000     2.400000e+04                 0.000000        2.400000e+04
+50%                 0.0                1.750000                                    0.0                        0.0                   4.500000                0.0         0.000000              260.000000                  0.0                0.000000     4.200000e+04                 0.000000        6.280000e+04
+75%                 0.0                5.000000                                    0.0                        0.0                  12.000000                0.0         0.000000              351.000000                  0.0                0.000000     1.764000e+05                 0.000000        2.920000e+05
+max                 0.0               14.330000                                    0.0                        0.0                 153.000000                0.0       150.000000              410.000000                  0.0           272000.000000     4.560000e+06            160012.000000        4.560000e+06

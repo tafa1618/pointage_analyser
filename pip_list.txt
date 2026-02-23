@@ -1,0 +1,108 @@
+﻿Package                   Version     Editable project location
+------------------------- ----------- -------------------------
+alembic                   1.13.3
+altair                    5.5.0
+annotated-doc             0.0.4
+annotated-types           0.7.0
+anyio                     4.12.1
+async-timeout             5.0.1
+asyncpg                   0.29.0
+attrs                     25.4.0
+bcrypt                    4.0.1
+blinker                   1.9.0
+cachetools                5.5.2
+certifi                   2026.1.4
+charset-normalizer        3.4.4
+click                     8.3.1
+colorama                  0.4.6
+dnspython                 2.8.0
+ecdsa                     0.19.1
+email-validator           2.3.0
+et_xmlfile                2.0.0
+fastapi                   0.111.0
+fastapi-cli               0.0.21
+Flask                     3.1.2
+flask-cors                6.0.2
+GeoAlchemy2               0.15.2
+gitdb                     4.0.12
+GitPython                 3.1.46
+greenlet                  3.3.1
+h11                       0.16.0
+httpcore                  1.0.9
+httptools                 0.7.1
+httpx                     0.28.1
+idna                      3.11
+itsdangerous              2.2.0
+Jinja2                    3.1.6
+jsonschema                4.26.0
+jsonschema-specifications 2025.9.1
+Mako                      1.3.10
+markdown-it-py            4.0.0
+MarkupSafe                3.0.3
+mdurl                     0.1.2
+narwhals                  2.16.0
+numpy                     2.4.2
+openpyxl                  3.1.5
+orjson                    3.11.7
+packaging                 24.2
+pandas                    2.3.3
+passlib                   1.7.4
+pillow                    10.4.0
+pip                       24.0
+pointage-analyzer         1.0.0       E:\Pointage Analyzer
+protobuf                  5.29.6
+psycopg                   3.2.1
+psycopg-binary            3.2.1
+pyarrow                   23.0.0
+pyasn1                    0.6.2
+pydantic                  2.12.5
+pydantic_core             2.41.5
+pydantic-settings         2.5.2
+pydeck                    0.9.1
+Pygments                  2.19.2
+PyPDF2                    3.0.1
+python-calamine           0.6.1
+python-dateutil           2.9.0.post0
+python-dotenv             1.0.0
+python-jose               3.5.0
+python-multipart          0.0.9
+pytz                      2025.2
+PyYAML                    6.0.3
+referencing               0.37.0
+requests                  2.32.5
+rich                      13.9.4
+rich-toolkit              0.19.4
+rpds-py                   0.30.0
+rsa                       4.9.1
+setuptools                65.5.0
+shapely                   2.1.2
+shellingham               1.5.4
+six                       1.17.0
+smmap                     5.0.2
+sniffio                   1.3.1
+SQLAlchemy                2.0.35
+starlette                 0.37.2
+streamlit                 1.39.0
+tenacity                  9.1.4
+toml                      0.10.2
+tornado                   6.5.4
+typer                     0.23.1
+typing_extensions         4.15.0
+typing-inspection         0.4.2
+tzdata                    2025.3
+ujson                     5.11.0
+urllib3                   2.6.3
+uvicorn                   0.30.1
+watchdog                  5.0.3
+watchfiles                1.1.1
+websockets                16.0
+Werkzeug                  3.1.5
+pip : 
+Au caractère Ligne:1 : 1
++ pip list 2>&1 | Out-File -Encoding utf8 pip_list.txt; Get-Content pip ...
++ ~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[notice] A new release of pip is available: 24.0 -> 26.0.1
+[notice] To update, run: python.exe -m pip install --upgrade pip

@@ -1,0 +1,65 @@
+# ============================================================
+# Données — JAMAIS commitées sous aucun prétexte
+# ============================================================
+data/
+*.xlsx
+*.xls
+*.csv
+*.parquet
+
+# Artefacts ML
+models/*.joblib
+models/*.pkl
+
+# Python
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Environnements virtuels
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+
+# Tests / Coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+cover/
+
+# Notebooks checkpoints
+.ipynb_checkpoints
+__marimo__/
+
+# IDE
+.vscode/
+.idea/
+.spyderproject
+
+# Outils
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.pytype/
+.pdm-python
+.pdm-build/
+
+# OS
+.DS_Store
+Thumbs.db

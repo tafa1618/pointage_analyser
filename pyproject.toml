@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pointage-analyzer"
+version = "1.0.0"
+description = "Système intelligent de contrôle des pointages et d'analyse d'efficience des OR"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.1.0,<3.0.0",
+    "numpy>=1.26.0,<3.0.0",
+    "scikit-learn>=1.4.0,<2.0.0",
+    "streamlit>=1.35.0,<2.0.0",
+    "joblib>=1.3.0,<2.0.0",
+    "openpyxl>=3.1.0,<4.0.0",
+    "plotly>=5.18.0",
+    "python-dateutil>=2.8.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.3",
+    "mypy>=1.8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
