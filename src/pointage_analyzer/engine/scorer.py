@@ -1,9 +1,10 @@
 """
 Orchestrateur principal — point d'entrée unique du pipeline complet.
 
-Deux pipelines indépendants :
-  1. Pipeline OR-level  (df_or)      → scoring anomalies
-  2. Pipeline Présence  (df_presence) → contrôle d'exhaustivité
+Trois pipelines indépendants :
+  1. Pipeline OR-level   (df_or)       → scoring anomalies
+  2. Pipeline Présence   (df_presence) → contrôle d'exhaustivité
+  3. Pipeline Efficience (efficience)  → ratios pointé/référence
 
 Aucune logique métier dans l'UI (dashboard/app.py appellera uniquement ce module).
 """
@@ -26,6 +27,7 @@ from pointage_analyzer.engine.rule_engine import RuleEngine
 from pointage_analyzer.ingestion.preprocessor import DataPreprocessor
 from pointage_analyzer.pipeline.dataset_builder import ORDatasetBuilder
 from pointage_analyzer.pipeline.exhaustivite_builder import ExhaustiviteBuilder
+from pointage_analyzer.pipeline.efficience_builder import EfficienceBuilder, EfficienceResult
 from pointage_analyzer.pipeline.feature_engineering import FeatureEngineer
 
 logger = logging.getLogger(__name__)
@@ -35,16 +37,17 @@ class ScoringError(Exception):
     """Raised when the end-to-end pipeline fails."""
 
 
-@dataclass(slots=True)
+@dataclass
 class PipelineResult:
-    """Résultats des deux pipelines."""
+    """Résultats des trois pipelines."""
 
     df_or: pd.DataFrame           # Dataset OR-level avec scores anomalie
     df_presence: pd.DataFrame     # Matrice présence brute (technicien × jour)
+    efficience: EfficienceResult | None = None  # Résultat module efficience
     metadata: dict = field(default_factory=dict)  # Statistiques de trace
 
 
-@dataclass(slots=True)
+@dataclass
 class ORPerformanceScorer:
     """
     Orchestrateur principal du pipeline.
@@ -161,7 +164,22 @@ class ORPerformanceScorer:
             df_presence = pd.DataFrame()
 
         # ==============================================================
-        # 3. PIPELINE OR-LEVEL
+        # 3. PIPELINE EFFICIENCE (BO)
+        # ==============================================================
+        logger.info("=== PIPELINE EFFICIENCE ===")
+        efficience_result: EfficienceResult | None = None
+        try:
+            if bo_df is not None and not bo_df.empty:
+                eff_builder = EfficienceBuilder(config=self.config)
+                # On passe un df_or temporaire vide — sera enrichi après OR pipeline
+                efficience_result = eff_builder.build(bo=bo_df, df_or=pd.DataFrame())
+            else:
+                logger.info("BO absent — pipeline efficience ignoré")
+        except Exception as exc:
+            logger.warning(f"Erreur pipeline efficience (non critique): {exc}")
+
+        # ==============================================================
+        # 4. PIPELINE OR-LEVEL
         # ==============================================================
         logger.info("=== PIPELINE OR-LEVEL ===")
         try:
@@ -195,8 +213,16 @@ class ORPerformanceScorer:
         except Exception as exc:
             raise ScoringError(f"Erreur pipeline OR: {exc}") from exc
 
+        # Enrichissement efficience avec le df_or final
+        if efficience_result is not None and bo_df is not None:
+            try:
+                eff_builder2 = EfficienceBuilder(config=self.config)
+                efficience_result = eff_builder2.build(bo=bo_df, df_or=df_or)
+            except Exception as exc:
+                logger.warning(f"Enrichissement efficience échoué: {exc}")
+
         # ==============================================================
-        # 4. Métadonnées de traçabilité
+        # 5. Métadonnées de traçabilité
         # ==============================================================
         metadata = {
             "nb_or_total": len(df_or),
@@ -211,11 +237,15 @@ class ORPerformanceScorer:
             ),
             "nb_or_avec_bo": int(df_or.get("has_bo", pd.Series(False)).sum()),
             "nb_or_avec_ie": int(df_or.get("has_ie", pd.Series(False)).sum()),
+            "nb_or_efficience_evaluables": (
+                efficience_result.nb_or_evaluables if efficience_result else 0
+            ),
         }
 
         return PipelineResult(
             df_or=df_or,
             df_presence=df_presence,
+            efficience=efficience_result,
             metadata=metadata,
         )
 

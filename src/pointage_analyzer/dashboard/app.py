@@ -32,6 +32,7 @@ from pointage_analyzer.dashboard.visualizations import (
     render_technicien_chart,
 )
 from pointage_analyzer.dashboard.exhaustivite import render_exhaustivite_tab
+from pointage_analyzer.dashboard.efficience import render_efficience_tab
 
 logging.basicConfig(level=logging.INFO)
 
@@ -171,12 +172,13 @@ st.markdown("---")
 # -----------------------------------------------------------------------
 # ONGLETS
 # -----------------------------------------------------------------------
-tab_vue, tab_anomalies, tab_equipes, tab_techniciens, tab_exhaustivite = st.tabs([
+tab_vue, tab_anomalies, tab_equipes, tab_tech, tab_exh, tab_eff = st.tabs([
     "📋 Vue OR",
     "🚨 Anomalies",
     "🏢 Équipes",
     "👷 Techniciens",
     "📅 Exhaustivité",
+    "⚡ Efficience",
 ])
 
 # --- TAB 1 : Vue OR ---
@@ -247,7 +249,7 @@ with tab_equipes:
         st.info("Données équipe indisponibles (colonne equipe_principale manquante).")
 
 # --- TAB 4 : Techniciens ---
-with tab_techniciens:
+with tab_tech:
     st.subheader("👷 Performance par Technicien")
     tech_stats = build_technicien_stats(df_or)
     if not tech_stats.empty:
@@ -259,5 +261,12 @@ with tab_techniciens:
         st.info("Données technicien indisponibles.")
 
 # --- TAB 5 : Exhaustivité ---
-with tab_exhaustivite:
+with tab_exh:
     render_exhaustivite_tab(df_presence, config)
+
+# --- TAB 6 : Efficience ---
+with tab_eff:
+    if result.efficience:
+        render_efficience_tab(result.efficience, config)
+    else:
+        st.info("Charger le fichier BO pour activer l'analyse d'efficience.")

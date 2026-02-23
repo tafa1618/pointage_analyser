@@ -134,5 +134,10 @@ class ScoringConfig:
     hours_normal_max: float = 8.0     # seuil normal/excessif (>8h = orange)
     hours_absent: float = 0.0         # seuil absent (=0 = rouge)
 
+    # -- Efficience OR (module BO) --
+    efficience_low: float  = 0.80     # < 80% = sous-productif 🔴
+    efficience_high: float = 1.20     # > 120% = dépassement budget 🟡
+    ecart_sources_seuil: float = 0.15 # écart > 15% entre BO et Pointage = alerte
+
     # -- Préprocesseur --
     min_rows: int = 1
