@@ -60,3 +60,4 @@ class RuleEngine:
 
         numeric_hours = frame[hour_cols].apply(pd.to_numeric, errors="coerce")
         return (numeric_hours > self.max_hours_threshold).any(axis=1)
+scoring/scorer.py
