@@ -330,13 +330,19 @@ class EfficienceBuilder:
 
         merged = df.merge(df_join, on="or_id", how="left")
 
+        # Valeurs par défaut pour les OR du BO non trouvés dans Pointage
+        if "equipe_principale" in merged.columns:
+            merged["equipe_principale"] = merged["equipe_principale"].fillna("Non Attribué")
+        if "technicien_principal_nom" in merged.columns:
+            merged["technicien_principal_nom"] = merged["technicien_principal_nom"].fillna("Non Attribué")
+
         # Si date_creation BO absente, utiliser date_premier_pointage
         if "date_creation" not in merged.columns or merged["date_creation"].isna().all():
             merged["date_creation"] = merged.get("date_premier_pointage")
 
         logger.info(
-            f"Enrichissement Pointage: {merged['equipe_principale'].notna().sum()} "
-            f"OR appariés sur {len(merged)}"
+            f"Enrichissement Pointage: {int((merged['equipe_principale'] != 'Non Attribué').sum())} "
+            f"OR appariés sur {len(merged)} OR du BO"
         )
         return merged
 
@@ -383,7 +389,7 @@ class EfficienceBuilder:
             return pd.DataFrame()
 
         agg = (
-            evaluables.groupby("equipe_principale")
+            evaluables.groupby("equipe_principale", dropna=False)
             .agg(
                 nb_or=("or_id", "count"),
                 ratio_moyen=("efficience_ratio", "mean"),
@@ -391,13 +397,14 @@ class EfficienceBuilder:
                 nb_sous_productif=("efficience_categorie", lambda x: (x == CAT_SOUS_PRODUCTIF).sum()),
                 nb_depasse=("efficience_categorie", lambda x: (x == CAT_DEPASSE).sum()),
                 nb_normal=("efficience_categorie", lambda x: (x == CAT_NORMAL).sum()),
-                heures_pointees_total=("total_heures", "sum"),
+                heures_pointees_total=("duree_pointage_tot", "sum"),  # Utilise BO
                 heures_reference_total=("temps_reference", "sum"),
             )
             .reset_index()
             .sort_values("ratio_moyen")
         )
 
+        agg["equipe_principale"] = agg["equipe_principale"].fillna("Non Attribué")
         agg["pct_sous_productif"] = (agg["nb_sous_productif"] / agg["nb_or"] * 100).round(1)
         agg["ratio_moyen_pct"]    = (agg["ratio_moyen"] * 100).round(1)
         return agg
@@ -418,12 +425,14 @@ class EfficienceBuilder:
                 ratio_moyen=("efficience_ratio", "mean"),
                 nb_sous_productif=("efficience_categorie", lambda x: (x == CAT_SOUS_PRODUCTIF).sum()),
                 nb_depasse=("efficience_categorie", lambda x: (x == CAT_DEPASSE).sum()),
-                heures_pointees=("total_heures", "sum"),
+                heures_pointees=("duree_pointage_tot", "sum"),  # Utilise BO
                 heures_reference=("temps_reference", "sum"),
             )
             .reset_index()
             .sort_values("ratio_moyen")
         )
 
+        agg["technicien_principal_nom"] = agg["technicien_principal_nom"].fillna("Non Attribué")
+        agg["equipe_principale"] = agg["equipe_principale"].fillna("Non Attribué")
         agg["ratio_moyen_pct"] = (agg["ratio_moyen"] * 100).round(1)
         return agg
