@@ -75,7 +75,9 @@ Contient uniquement OR clôturés et facturés :
 
 ## 🧠 Architecture du projet
 or-performance-analyzer/
+
 │
+
 ├── app.py
 ├── scoring/
 │ ├── preprocess.py
@@ -163,8 +165,6 @@ Version actuelle :
 - Les données sont traitées en mémoire
 - Aucun historique conservé
 
-Recommandation :
-Utiliser des données anonymisées pour démonstration publique.
 
 ---
 
