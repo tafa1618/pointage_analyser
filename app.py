@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import traceback
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -24,14 +27,83 @@ from scoring.scorer import ORPerformanceScorer, ScoringError
 st.set_page_config(page_title="OR Performance Analyzer", layout="wide")
 
 
+def _init_session_state() -> None:
+    """Centralize Streamlit session state initialization."""
+    defaults = {
+        "uploaded_ie": None,
+        "uploaded_pointage": None,
+        "uploaded_bo": None,
+        "uploaded_ie_name": None,
+        "uploaded_pointage_name": None,
+        "uploaded_bo_name": None,
+        "input_signature": None,
+        "analysis_done": False,
+        "needs_recalc": False,
+        "dashboard_df": None,
+        "scored_df": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
 @st.cache_resource(show_spinner=False)
 def get_scorer() -> ORPerformanceScorer:
+    """Cached resource: scorer with ML model lifecycle."""
     return ORPerformanceScorer()
 
 
 @st.cache_resource(show_spinner=False)
 def get_dashboard_analytics() -> DashboardAnalytics:
     return DashboardAnalytics()
+
+
+@st.cache_data(show_spinner=False)
+def build_dataset_cached(ie_bytes: bytes, pointage_bytes: bytes, bo_bytes: bytes) -> pd.DataFrame:
+    """Cached OR-level dataset build, keyed by exact file bytes."""
+    scorer = get_scorer()
+    ie_df = scorer.preprocessor.read_excel(io.BytesIO(ie_bytes), "IE")
+    pointage_df = scorer.preprocessor.read_excel(io.BytesIO(pointage_bytes), "Pointage")
+    bo_df = scorer.preprocessor.read_excel(io.BytesIO(bo_bytes), "BO")
+    return scorer.dataset_builder.build(ie_df, pointage_df, bo_df)
+
+
+@st.cache_data(show_spinner=False)
+def feature_engineering_cached(dataset_df: pd.DataFrame) -> pd.DataFrame:
+    scorer = get_scorer()
+    return scorer.feature_engineer.build_features(dataset_df)
+
+
+@st.cache_data(show_spinner=False)
+def rule_engine_cached(featured_df: pd.DataFrame) -> pd.DataFrame:
+    scorer = get_scorer()
+    return scorer.rule_engine.apply(featured_df)
+
+
+def score_ml(ruled_df: pd.DataFrame) -> pd.DataFrame:
+    """ML scoring is kept out of cache_data to rely on cache_resource model lifecycle."""
+    scorer = get_scorer()
+    return scorer.ml_model.score(ruled_df)
+
+
+def _file_digest(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _set_uploaded_file(session_key: str, name_key: str, uploaded_file: Any) -> bool:
+    """Store uploaded file bytes in session_state; return True if content changed."""
+    if uploaded_file is None:
+        return False
+
+    payload = uploaded_file.getvalue()
+    if not isinstance(payload, bytes) or len(payload) == 0:
+        return False
+
+    previous = st.session_state.get(session_key)
+    changed = previous != payload
+    st.session_state[session_key] = payload
+    st.session_state[name_key] = uploaded_file.name
+    return changed
 
 
 def _render_figure(fig) -> None:
@@ -259,44 +331,121 @@ def render_individual_or_tab(frame: pd.DataFrame) -> None:
 
 
 def main() -> None:
+    _init_session_state()
+
     st.title("OR Performance Analyzer")
     st.caption("Dashboard EDA corporate multi-onglets pour pilotage OR")
 
     with st.sidebar:
-        st.header("Données d'entrée")
-        ie_file = st.file_uploader("Fichier IE (Excel)", type=["xlsx", "xls"], key="ie")
-        pointage_file = st.file_uploader(
-            "Fichier Pointage (Excel)", type=["xlsx", "xls"], key="pointage"
+        st.header("Section Upload")
+        ie_uploader = st.file_uploader("Fichier IE (Excel)", type=["xlsx", "xls"], key="ie")
+        pt_uploader = st.file_uploader("Fichier Pointage (Excel)", type=["xlsx", "xls"], key="pointage")
+        bo_uploader = st.file_uploader("Fichier BO (Excel)", type=["xlsx", "xls"], key="bo")
+
+        changed = False
+        changed |= _set_uploaded_file("uploaded_ie", "uploaded_ie_name", ie_uploader)
+        changed |= _set_uploaded_file("uploaded_pointage", "uploaded_pointage_name", pt_uploader)
+        changed |= _set_uploaded_file("uploaded_bo", "uploaded_bo_name", bo_uploader)
+
+        if changed:
+            st.session_state["analysis_done"] = False
+            st.session_state["needs_recalc"] = True
+
+        ready = all(
+            [
+                st.session_state["uploaded_ie"],
+                st.session_state["uploaded_pointage"],
+                st.session_state["uploaded_bo"],
+            ]
         )
-        bo_file = st.file_uploader("Fichier BO (Excel)", type=["xlsx", "xls"], key="bo")
-        run_btn = st.button("Lancer l'analyse", type="primary")
 
-    if not run_btn:
-        st.info("Chargez les trois fichiers Excel puis cliquez sur 'Lancer l'analyse'.")
+        st.subheader("Section Construction dataset")
+        if ready:
+            st.success("Fichiers déjà chargés en session (persistance active).")
+            st.caption(
+                f"IE: {st.session_state['uploaded_ie_name']} | "
+                f"Pointage: {st.session_state['uploaded_pointage_name']} | "
+                f"BO: {st.session_state['uploaded_bo_name']}"
+            )
+        else:
+            st.warning("Veuillez charger les 3 fichiers Excel.")
+
+        run_btn = st.button("Lancer l'analyse", type="primary", disabled=not ready)
+        recalc_btn = st.button("Recalculer analyse", disabled=not ready)
+        reset_btn = st.button("Réinitialiser session")
+
+    if reset_btn:
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+    if not ready:
+        st.info("Chargez les fichiers dans la sidebar. Les données resteront en mémoire pendant la session.")
         return
 
-    if not all([ie_file, pointage_file, bo_file]):
-        st.error("Veuillez charger les 3 fichiers Excel avant de lancer l'analyse.")
+    # signature based only on input bytes; this controls rerun necessity
+    new_signature = "|".join(
+        [
+            _file_digest(st.session_state["uploaded_ie"]),
+            _file_digest(st.session_state["uploaded_pointage"]),
+            _file_digest(st.session_state["uploaded_bo"]),
+        ]
+    )
+
+    if st.session_state["input_signature"] != new_signature:
+        st.session_state["analysis_done"] = False
+        st.session_state["needs_recalc"] = True
+        st.session_state["input_signature"] = new_signature
+
+    should_run = run_btn or recalc_btn
+
+    if should_run:
+        analytics = get_dashboard_analytics()
+
+        with st.spinner("Construction dataset + feature engineering + scoring..."):
+            try:
+                dataset_df = build_dataset_cached(
+                    st.session_state["uploaded_ie"],
+                    st.session_state["uploaded_pointage"],
+                    st.session_state["uploaded_bo"],
+                )
+                featured_df = feature_engineering_cached(dataset_df)
+                ruled_df = rule_engine_cached(featured_df)
+                scored_df = score_ml(ruled_df)
+                scored_df["final_anomaly_score"] = (
+                    0.45 * scored_df["rule_anomaly_score"] + 0.55 * (scored_df["ml_anomaly_score"] / 100.0)
+                ).clip(0.0, 1.0)
+                scored_df["final_anomaly_flag"] = scored_df["final_anomaly_score"] >= 0.60
+                scored_df = scored_df.sort_values("final_anomaly_score", ascending=False)
+
+                dashboard_df = analytics.enrich(scored_df)
+
+                st.session_state["scored_df"] = scored_df
+                st.session_state["dashboard_df"] = dashboard_df
+                st.session_state["analysis_done"] = True
+                st.session_state["needs_recalc"] = False
+            except (ScoringError, DashboardAnalyticsError) as exc:
+                st.error(str(exc))
+                with st.expander("Détails techniques"):
+                    st.code(traceback.format_exc())
+                return
+            except Exception as exc:  # pylint: disable=broad-except
+                st.error(f"Erreur inattendue: {exc}")
+                with st.expander("Traceback"):
+                    st.code(traceback.format_exc())
+                return
+
+    if not st.session_state["analysis_done"]:
+        if st.session_state["needs_recalc"]:
+            st.warning("Des fichiers ont changé. Cliquez sur 'Recalculer analyse'.")
+        else:
+            st.info("Cliquez sur 'Lancer l'analyse' pour générer le dashboard.")
         return
 
-    scorer = get_scorer()
-    analytics = get_dashboard_analytics()
+    st.success("Dataset déjà construit. Les filtres n'entraînent pas de recalcul complet.")
+    dashboard_df = st.session_state["dashboard_df"]
 
-    with st.spinner("Construction du dataset OR-level et scoring..."):
-        try:
-            scored_df = scorer.run(ie_file, pointage_file, bo_file)
-            dashboard_df = analytics.enrich(scored_df)
-        except (ScoringError, DashboardAnalyticsError) as exc:
-            st.error(str(exc))
-            with st.expander("Détails techniques"):
-                st.code(traceback.format_exc())
-            return
-        except Exception as exc:  # pylint: disable=broad-except
-            st.error(f"Erreur inattendue: {exc}")
-            with st.expander("Traceback"):
-                st.code(traceback.format_exc())
-            return
-
+    st.subheader("Section Visualisation")
     tabs = st.tabs(["📊 Vue Globale", "🔎 EDA Avancé", "🚩 Analyse des Anomalies", "🔍 Analyse OR Individuel"])
 
     with tabs[0]:
