@@ -127,3 +127,4 @@ class DataPreprocessor:
     def to_numeric_safe(series: pd.Series) -> pd.Series:
         cleaned = series.astype(str).str.replace(",", ".", regex=False).str.strip()
         return pd.to_numeric(cleaned, errors="coerce")
+scoring/rule_e
