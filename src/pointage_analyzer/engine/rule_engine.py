@@ -150,20 +150,14 @@ class RuleEngine:
         r = self._rule_efficience_faible(df)
         df["rule_efficience_faible"] = r
         df["rule_efficience_faible_label"] = np.where(
-            r > 0.5,
-            f"🔴 SUR-CONSOMMATION HEURES — Le ratio heures réalisées / heures vendues dépasse "
-            f"{1 / self.config.efficiency_low_threshold:.0%}. L'équipe a travaillé bien plus que "
-            f"prévu sans que cela soit compensé commercialement. Vérifier si un avenant est nécessaire.",
-            np.where(
-                r > 0,
-                f"🟡 SOUS-EFFICIENCE — Le ratio heures réalisées / heures vendues est inférieur à "
-                f"{self.config.efficiency_low_threshold:.0%}. L'équipe a travaillé significativement "
-                f"moins que prévu dans le contrat. Vérifier si des heures ont été oubliées dans "
-                f"le pointage ou si l'OR a été réalisé partiellement.",
-                ""
-            )
+            r > 0,
+            f"🟡 SOUS-EFFICIENCE — Le ratio heures réalisées / heures vendues est inférieur à "
+            f"{self.config.efficiency_low_threshold:.0%}. L'équipe a travaillé significativement "
+            f"moins que prévu dans le contrat. Vérifier si des heures ont été oubliées dans "
+            f"le pointage ou si l'OR a été réalisé partiellement.",
+            ""
         )
-        all_rules.append(("rule_efficience_faible", r, "FINANCIER", "Efficience hors norme (sous ou sur)"))
+        all_rules.append(("rule_efficience_faible", r, "FINANCIER", "Sous-efficience (heures vendues non justifiées)"))
 
         # ---- Scores agrégés par catégorie ----
         tech_rules  = [r for name, r, cat, _ in all_rules if cat == "TECHNIQUE"]
@@ -209,7 +203,7 @@ class RuleEngine:
         if "heures_jour_max" not in df.columns:
             return pd.Series(0.0, index=df.index)
         max_h = df["heures_jour_max"].fillna(0.0)
-        # Score graduel : 0 si ≤ 10h, 0.5 si 10-12h, 1.0 si > 12h
+        # Score graduiel : 0 si ≤ 10h, 0.5 si 10-12h, 1.0 si > 12h
         return pd.Series(
             np.where(
                 max_h > self.config.max_hours_per_day, 1.0,
@@ -265,11 +259,6 @@ class RuleEngine:
             return pd.Series(0.0, index=df.index)
         ratio = df["ratio_reel_vendu"].fillna(1.0)
         threshold = self.config.efficiency_low_threshold
-        over_threshold = 1.0 / threshold  # ex: 1/0.70 ≈ 1.43 → sur-consommation
-        return pd.Series(
-            np.where(
-                ratio > over_threshold, 1.0,   # sur-consommation (score max)
-                np.where(ratio < threshold, 0.5, 0.0)  # sous-efficience (score moyen)
-            ),
-            index=df.index,
-        )
+        # ratio_reel_vendu < threshold → efficience faible (consomme moins que vendu)
+        # ratio_reel_vendu > 1/threshold → efficience très faible (consomme beaucoup plus)
+        return (ratio < threshold).astype(float)
