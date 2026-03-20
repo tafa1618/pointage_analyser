@@ -1,475 +1,272 @@
+"""
+app.py — Thin shell Streamlit (< 150 lignes)
+
+Responsabilité unique : orchestrer l'UI.
+Zéro logique métier. Tout délégué à scorer.ORPerformanceScorer.
+"""
+
 from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import traceback
-from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from dashboard.analytics import (
-    DashboardAnalytics,
-    DashboardAnalyticsError,
+from pointage_analyzer.core.config import ScoringConfig
+from pointage_analyzer.engine.scorer import ORPerformanceScorer, ScoringError
+from pointage_analyzer.dashboard.analytics import (
+    GlobalKPIs,
     apply_filters,
+    build_equipe_stats,
     build_monthly_metrics,
+    build_technicien_stats,
     compute_global_kpis,
 )
-from dashboard.visualizations import (
-    anomaly_scatter_duration_efficiency,
-    anomaly_scatter_rule_ml,
-    global_charts,
-    monthly_charts,
+from pointage_analyzer.dashboard.visualizations import (
+    render_anomaly_scatter,
+    render_global_charts,
+    render_rule_breakdown,
+    render_technicien_chart,
 )
-from scoring.scorer import ORPerformanceScorer, ScoringError
+from pointage_analyzer.dashboard.exhaustivite import render_exhaustivite_tab
+from pointage_analyzer.dashboard.efficience import render_efficience_tab
 
+logging.basicConfig(level=logging.INFO)
 
-st.set_page_config(page_title="OR Performance Analyzer", layout="wide")
+st.set_page_config(
+    page_title="Pointage Analyzer",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
+# -----------------------------------------------------------------------
+# SIDEBAR — Upload + Config
+# -----------------------------------------------------------------------
+with st.sidebar:
+    st.title("📊 Pointage Analyzer")
+    st.caption("Contrôle des pointages & analyse d'efficience OR")
+    st.markdown("---")
 
-def _init_session_state() -> None:
-    """Centralize Streamlit session state initialization."""
-    defaults = {
-        "uploaded_ie": None,
-        "uploaded_pointage": None,
-        "uploaded_bo": None,
-        "uploaded_ie_name": None,
-        "uploaded_pointage_name": None,
-        "uploaded_bo_name": None,
-        "input_signature": None,
-        "analysis_done": False,
-        "needs_recalc": False,
-        "dashboard_df": None,
-        "scored_df": None,
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+    st.subheader("📁 Fichier source")
+    uploaded_file = st.file_uploader(
+        "Fichier Excel (IE + Pointage + BO)",
+        type=["xlsx", "xls"],
+        help="Glisser-déposer le fichier contenant les 3 feuilles",
+    )
 
+    # Sélecteurs de feuilles (avec valeurs par défaut)
+    if uploaded_file is not None:
+        try:
+            _xl = pd.ExcelFile(uploaded_file, engine="openpyxl")
+            _sheets = _xl.sheet_names
+            uploaded_file.seek(0)
+        except Exception:
+            _sheets = ["IE", "Pointage", "BO"]
 
-@st.cache_resource(show_spinner=False)
-def get_scorer() -> ORPerformanceScorer:
-    """Cached resource: scorer with ML model lifecycle."""
-    return ORPerformanceScorer()
-
-
-@st.cache_resource(show_spinner=False)
-def get_dashboard_analytics() -> DashboardAnalytics:
-    return DashboardAnalytics()
-
-
-@st.cache_data(show_spinner=False)
-def build_dataset_cached(ie_bytes: bytes, pointage_bytes: bytes, bo_bytes: bytes) -> pd.DataFrame:
-    """Cached OR-level dataset build, keyed by exact file bytes."""
-    scorer = get_scorer()
-    ie_df = scorer.preprocessor.read_excel(io.BytesIO(ie_bytes), "IE")
-    pointage_df = scorer.preprocessor.read_excel(io.BytesIO(pointage_bytes), "Pointage")
-    bo_df = scorer.preprocessor.read_excel(io.BytesIO(bo_bytes), "BO")
-    return scorer.dataset_builder.build(ie_df, pointage_df, bo_df)
-
-
-@st.cache_data(show_spinner=False)
-def feature_engineering_cached(dataset_df: pd.DataFrame) -> pd.DataFrame:
-    scorer = get_scorer()
-    return scorer.feature_engineer.build_features(dataset_df)
-
-
-@st.cache_data(show_spinner=False)
-def rule_engine_cached(featured_df: pd.DataFrame) -> pd.DataFrame:
-    scorer = get_scorer()
-    return scorer.rule_engine.apply(featured_df)
-
-
-def score_ml(ruled_df: pd.DataFrame) -> pd.DataFrame:
-    """ML scoring is kept out of cache_data to rely on cache_resource model lifecycle."""
-    scorer = get_scorer()
-    return scorer.ml_model.score(ruled_df)
-
-
-def _file_digest(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _set_uploaded_file(session_key: str, name_key: str, uploaded_file: Any) -> bool:
-    """Store uploaded file bytes in session_state; return True if content changed."""
-    if uploaded_file is None:
-        return False
-
-    payload = uploaded_file.getvalue()
-    if not isinstance(payload, bytes) or len(payload) == 0:
-        return False
-
-    previous = st.session_state.get(session_key)
-    changed = previous != payload
-    st.session_state[session_key] = payload
-    st.session_state[name_key] = uploaded_file.name
-    return changed
-
-
-def _render_figure(fig) -> None:
-    if fig is None:
-        st.info("Graphique indisponible (données insuffisantes).")
+        with st.expander("🗂️ Noms des feuilles", expanded=False):
+            sheet_ie       = st.selectbox("Feuille IE",       _sheets, index=_sheets.index("IE")       if "IE"       in _sheets else 0)
+            sheet_pointage = st.selectbox("Feuille Pointage", _sheets, index=_sheets.index("Pointage") if "Pointage" in _sheets else min(1, len(_sheets)-1))
+            sheet_bo       = st.selectbox("Feuille BO",       _sheets, index=_sheets.index("BO")       if "BO"       in _sheets else min(2, len(_sheets)-1))
     else:
-        st.plotly_chart(fig, use_container_width=True)
+        sheet_ie, sheet_pointage, sheet_bo = "IE", "Pointage", "BO"
+
+    st.markdown("---")
+    st.subheader("⚙️ Configuration")
+    contamination = st.slider("Taux d'anomalie attendu (%)", 1, 20, 8, 1)
+    rule_weight   = st.slider("Poids règles métier (%)", 10, 90, 45, 5)
+    show_debug    = st.checkbox("Mode debug", value=False)
+
+    run = st.button("🚀 Lancer l'analyse", type="primary", use_container_width=True)
+
+config = ScoringConfig(
+    contamination=contamination / 100,
+    rule_weight=rule_weight / 100,
+    ml_weight=1 - rule_weight / 100,
+)
+
+# -----------------------------------------------------------------------
+# CACHE — évite de recalculer si le fichier n'a pas changé
+# -----------------------------------------------------------------------
+def _file_hash(f) -> str | None:
+    if f is None:
+        return None
+    f.seek(0)
+    h = hashlib.md5(f.read()).hexdigest()
+    f.seek(0)
+    return h
 
 
-def _format_metric(value: float | int | None, suffix: str = "") -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return "N/A"
-    if isinstance(value, float):
-        return f"{value:,.2f}{suffix}".replace(",", " ")
-    return f"{value:,}{suffix}".replace(",", " ")
-
-
-def render_global_tab(frame: pd.DataFrame) -> None:
-    kpis = compute_global_kpis(frame)
-
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    col1.metric("Nombre total OR", _format_metric(kpis["total_or"]))
-    col2.metric("Nombre anomalies", _format_metric(kpis["anomalies"]))
-    col3.metric("% anomalies", _format_metric(kpis["anomaly_pct"], "%"))
-    col4.metric("Score moyen", _format_metric(kpis["score_moyen"]))
-    col5.metric("Efficience moyenne", _format_metric(kpis["efficience_moyenne"]))
-    col6.metric("Marge moyenne", _format_metric(kpis["marge_moyenne"]))
-
-    charts = global_charts(frame)
-
-    row1_col1, row1_col2, row1_col3 = st.columns(3)
-    with row1_col1:
-        _render_figure(charts["hist_duree"])
-    with row1_col2:
-        _render_figure(charts["hist_efficience"])
-    with row1_col3:
-        _render_figure(charts["hist_score"])
-
-    row2_col1, row2_col2 = st.columns(2)
-    with row2_col1:
-        _render_figure(charts["box_efficience_type"])
-    with row2_col2:
-        _render_figure(charts["bar_taux_type"])
-
-    _render_figure(charts["heatmap_corr"])
-
-
-def render_advanced_eda_tab(frame: pd.DataFrame) -> None:
-    st.subheader("Filtres dynamiques")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        type_values = st.multiselect("Type OR", sorted(frame["dim_type_or"].dropna().unique().tolist()))
-        loc_values = st.multiselect(
-            "Localisation", sorted(frame["dim_localisation"].dropna().unique().tolist())
-        )
-    with col2:
-        tech_values = st.multiselect(
-            "Technicien", sorted(frame["dim_technicien"].dropna().unique().tolist())
-        )
-        model_values = st.multiselect("Modèle équipement", sorted(frame["dim_modele"].dropna().unique().tolist()))
-    with col3:
-        min_date = frame["date_reference"].min()
-        max_date = frame["date_reference"].max()
-        if pd.isna(min_date) or pd.isna(max_date):
-            date_range = None
-            st.info("Période indisponible (dates non renseignées).")
-        else:
-            selected = st.date_input("Période", value=(min_date.date(), max_date.date()))
-            if isinstance(selected, tuple) and len(selected) == 2:
-                date_range = (pd.Timestamp(selected[0]), pd.Timestamp(selected[1]))
-            else:
-                date_range = None
-
-    filtered = apply_filters(frame, type_values, loc_values, tech_values, model_values, date_range)
-    st.caption(f"Volume après filtres: {len(filtered)} OR")
-
-    seg = (
-        filtered.groupby("dim_segment", as_index=False)
-        .agg(
-            inefficience_moyenne=("surconsommation", "mean"),
-            taux_anomalie=("is_anomaly", "mean"),
-            score_moyen=("anomaly_score_global", "mean"),
-        )
-        .sort_values("inefficience_moyenne", ascending=False)
+@st.cache_data(show_spinner="⏳ Analyse en cours…")
+def _run_pipeline(file_bytes, sheet_ie, sheet_pointage, sheet_bo, contamination, rule_weight):
+    """Wrappé dans cache_data pour memoïsation. Un seul fichier, 3 feuilles."""
+    cfg = ScoringConfig(
+        contamination=contamination,
+        rule_weight=rule_weight,
+        ml_weight=1 - rule_weight,
     )
-    if not seg.empty:
-        seg["taux_anomalie"] = seg["taux_anomalie"] * 100
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown("**Top segments les plus inefficients**")
-        st.dataframe(seg[["dim_segment", "inefficience_moyenne"]].head(10), use_container_width=True)
-    with c2:
-        st.markdown("**Taux anomalie par segment**")
-        st.dataframe(seg[["dim_segment", "taux_anomalie"]].head(10), use_container_width=True)
-    with c3:
-        st.markdown("**Moyenne score par segment**")
-        st.dataframe(seg[["dim_segment", "score_moyen"]].head(10), use_container_width=True)
-
-    d1, d2 = st.columns(2)
-    with d1:
-        st.markdown("**Distribution des retards pointage**")
-        _render_figure(global_charts(filtered).get("hist_duree"))
-    with d2:
-        st.markdown("**Analyse des délais**")
-        delays = filtered[["or_id", "delai_premier_pointage", "delai_dernier_pointage"]].copy()
-        st.dataframe(delays.sort_values("delai_dernier_pointage", ascending=False).head(30), use_container_width=True)
-
-    monthly = build_monthly_metrics(filtered)
-    st.markdown("**Évolution mensuelle (OR, % anomalies, score moyen)**")
-    _render_figure(monthly_charts(monthly))
+    scorer = ORPerformanceScorer(config=cfg)
+    # On recrée 3 BytesIO depuis les mêmes bytes (chaque read_excel consomme le curseur)
+    ie_f  = io.BytesIO(file_bytes)
+    pt_f  = io.BytesIO(file_bytes)
+    bo_f  = io.BytesIO(file_bytes)
+    return scorer.run(ie_f, pt_f, bo_f,
+                      ie_sheet=sheet_ie,
+                      pointage_sheet=sheet_pointage,
+                      bo_sheet=sheet_bo)
 
 
-def render_anomaly_tab(frame: pd.DataFrame) -> None:
-    anomaly_filter = st.multiselect(
-        "Filtrer par type anomalie",
-        ["technique", "process", "financier", "ML"],
+# -----------------------------------------------------------------------
+# LOGIQUE PRINCIPALE
+# -----------------------------------------------------------------------
+if uploaded_file is None:
+    st.info(
+        "👈 Glisser-déposer le fichier Excel **(IE + Pointage + BO)** "
+        "dans la barre latérale, puis cliquer **🚀 Lancer l'analyse**."
+    )
+    st.stop()
+
+if run or "pipeline_result" not in st.session_state:
+    file_bytes = uploaded_file.read()
+
+    try:
+        result = _run_pipeline(
+            file_bytes,
+            sheet_ie, sheet_pointage, sheet_bo,
+            config.contamination, config.rule_weight,
+        )
+        st.session_state["pipeline_result"] = result
+        st.success(
+            f"✅ Analyse complète — {result.metadata.get('nb_or_total', 0)} OR analysés "
+            f"· {result.metadata.get('nb_techniciens', 0)} techniciens"
+        )
+    except ScoringError as exc:
+        st.error(f"❌ Erreur pipeline: {exc}")
+        if show_debug:
+            st.code(traceback.format_exc())
+        st.stop()
+
+result = st.session_state["pipeline_result"]
+df_or       = result.df_or
+df_presence = result.df_presence
+
+# -----------------------------------------------------------------------
+# GLOBAL KPIs
+# -----------------------------------------------------------------------
+kpis = compute_global_kpis(df_or, df_presence)
+
+k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1.metric("🔢 OR Total",         f"{kpis.nb_or_total}")
+k2.metric("🚨 Anomalies",        f"{kpis.nb_anomalies}",
+          f"{kpis.taux_anomalie:.1%}")
+k3.metric("🔓 OR Ouverts",       f"{kpis.nb_or_ouverts}")
+k4.metric("🔒 OR Clôturés",      f"{kpis.nb_or_clotures}")
+k5.metric("👷 Techniciens",      f"{kpis.nb_techniciens}")
+k6.metric("⏱️ Heures totales",   f"{kpis.heures_totales:,.0f}h")
+
+st.markdown("---")
+
+# -----------------------------------------------------------------------
+# ONGLETS
+# -----------------------------------------------------------------------
+tab_vue, tab_anomalies, tab_equipes, tab_tech, tab_exh, tab_eff = st.tabs([
+    "📋 Vue OR",
+    "🚨 Anomalies",
+    "🏢 Équipes",
+    "👷 Techniciens",
+    "📅 Exhaustivité",
+    "⚡ Efficience",
+])
+
+# --- TAB 1 : Vue OR ---
+with tab_vue:
+    st.subheader("Tableau des Ordres de Réparation")
+
+    with st.expander("Filtres", expanded=False):
+        col_f1, col_f2, col_f3 = st.columns(3)
+        positions = sorted(df_or["position"].dropna().unique()) if "position" in df_or.columns else []
+        pos_sel = col_f1.multiselect("Position", positions, default=positions)
+        anomaly_only = col_f2.checkbox("Anomalies uniquement")
+        equipes = sorted(df_or["equipe_principale"].dropna().unique()) if "equipe_principale" in df_or.columns else []
+        eq_sel = col_f3.multiselect("Équipe principale", equipes)
+
+    df_view = apply_filters(
+        df_or,
+        position_filter=pos_sel or None,
+        anomaly_only=anomaly_only,
+        equipe_filter=eq_sel or None,
     )
 
-    anomalies = frame[frame["is_anomaly"]].copy()
-    if anomaly_filter:
-        pattern = "|".join(anomaly_filter)
-        anomalies = anomalies[anomalies["anomaly_types"].str.contains(pattern, case=False, na=False)]
+    display_cols = [c for c in [
+        "or_id", "type_or", "position", "nature_materiel",
+        "technicien_principal_nom", "equipe_principale", "nb_techniciens",
+        "total_heures", "score_final", "severity", "rule_anomaly_types",
+    ] if c in df_view.columns]
 
-    st.markdown("**Table triable des OR anormaux**")
-    st.dataframe(
-        anomalies[
-            [
-                "or_id",
-                "dim_type_or",
-                "anomaly_types",
-                "anomaly_score_global",
-                "anomaly_score_rule",
-                "anomaly_score_ml",
-                "surconsommation",
-                "perte_potentielle",
-            ]
-        ].sort_values("anomaly_score_global", ascending=False),
-        use_container_width=True,
-    )
+    st.dataframe(df_view[display_cols], use_container_width=True, height=500)
+
+    csv = df_view.to_csv(index=False, sep=";").encode("utf-8-sig")
+    st.download_button("⬇️ Exporter CSV", csv, "or_dataset.csv", "text/csv")
+
+# --- TAB 2 : Anomalies ---
+with tab_anomalies:
+    st.subheader("🚨 Analyse des Anomalies")
+    charts = render_global_charts(df_or)
+
+    if "score_distribution" in charts:
+        st.plotly_chart(charts["score_distribution"], use_container_width=True)
 
     c1, c2 = st.columns(2)
-    with c1:
-        _render_figure(anomaly_scatter_duration_efficiency(anomalies))
-    with c2:
-        _render_figure(anomaly_scatter_rule_ml(anomalies))
+    scatter = render_anomaly_scatter(df_or)
+    if scatter:
+        c1.plotly_chart(scatter, use_container_width=True)
+    rule_chart = render_rule_breakdown(df_or)
+    if rule_chart:
+        c2.plotly_chart(rule_chart, use_container_width=True)
 
-    st.markdown("**Top 20 OR critiques**")
-    st.dataframe(
-        anomalies.sort_values("anomaly_score_global", ascending=False).head(20),
-        use_container_width=True,
-    )
+    st.subheader("Détail des OR anomaliques")
+    df_anom = df_or[df_or.get("anomaly_flag", pd.Series(False))] if "anomaly_flag" in df_or.columns else pd.DataFrame()
+    if not df_anom.empty:
+        anom_cols = [c for c in [
+            "or_id", "severity", "score_final", "rule_score_total", "ml_score",
+            "rule_anomaly_types", "technicien_principal_nom", "equipe_principale",
+        ] if c in df_anom.columns]
+        st.dataframe(df_anom[anom_cols].sort_values("score_final", ascending=False),
+                     use_container_width=True, height=400)
 
-    impact_col1, impact_col2 = st.columns(2)
-    impact_col1.metric(
-        "Somme surconsommation",
-        _format_metric(float(anomalies["surconsommation"].fillna(0).sum())),
-    )
-    impact_col2.metric(
-        "Estimation perte potentielle",
-        _format_metric(float(anomalies["perte_potentielle"].fillna(0).sum())),
-    )
+# --- TAB 3 : Équipes ---
+with tab_equipes:
+    st.subheader("🏢 Performance par Équipe")
+    equipe_stats = build_equipe_stats(df_or)
+    if not equipe_stats.empty:
+        if "equipe_scores" in charts:
+            st.plotly_chart(charts["equipe_scores"], use_container_width=True)
+        st.dataframe(equipe_stats, use_container_width=True)
+    else:
+        st.info("Données équipe indisponibles (colonne equipe_principale manquante).")
 
+# --- TAB 4 : Techniciens ---
+with tab_tech:
+    st.subheader("👷 Performance par Technicien")
+    tech_stats = build_technicien_stats(df_or)
+    if not tech_stats.empty:
+        fig_tech = render_technicien_chart(tech_stats)
+        if fig_tech:
+            st.plotly_chart(fig_tech, use_container_width=True)
+        st.dataframe(tech_stats, use_container_width=True)
+    else:
+        st.info("Données technicien indisponibles.")
 
-def render_individual_or_tab(frame: pd.DataFrame) -> None:
-    or_values = frame["or_id"].astype(str).sort_values().unique().tolist()
-    selected_or = st.selectbox("Choisir un OR", or_values)
+# --- TAB 5 : Exhaustivité ---
+with tab_exh:
+    render_exhaustivite_tab(df_presence, config)
 
-    row = frame[frame["or_id"].astype(str) == selected_or]
-    if row.empty:
-        st.warning("OR introuvable.")
-        return
-
-    or_row = row.iloc[0]
-
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Temps prévu", _format_metric(or_row.get("temps_prevu")))
-    m2.metric("Temps réel", _format_metric(or_row.get("temps_reel")))
-    m3.metric("Efficience", _format_metric(or_row.get("efficience_devis")))
-    m4.metric("Surconsommation", _format_metric(or_row.get("surconsommation")))
-    m5.metric("Marge estimée", _format_metric(or_row.get("marge_estimee")))
-
-    d1, d2 = st.columns(2)
-    d1.metric("Délai premier pointage", _format_metric(or_row.get("delai_premier_pointage")))
-    d2.metric("Délai dernier pointage", _format_metric(or_row.get("delai_dernier_pointage")))
-
-    st.markdown("**Scores détaillés**")
-    score_df = pd.DataFrame(
-        {
-            "score": [
-                "anomaly_score_technique",
-                "anomaly_score_process",
-                "anomaly_score_financier",
-                "anomaly_score_ml",
-                "anomaly_score_global",
-            ],
-            "valeur": [
-                or_row.get("anomaly_score_technique"),
-                or_row.get("anomaly_score_process"),
-                or_row.get("anomaly_score_financier"),
-                or_row.get("anomaly_score_ml"),
-                or_row.get("anomaly_score_global"),
-            ],
-        }
-    )
-    st.dataframe(score_df, use_container_width=True)
-
-    st.markdown("**Règles déclenchées**")
-    triggered = []
-    if bool(or_row.get("rule_negative_values", False)):
-        triggered.append("Valeurs négatives détectées")
-    if bool(or_row.get("rule_excessive_hours", False)):
-        triggered.append("Durée excessive")
-    if bool(or_row.get("rule_high_missing", False)):
-        triggered.append("Taux élevé de valeurs manquantes")
-    st.write(triggered if triggered else ["Aucune règle déclenchée"])
-
-    percentile = (
-        frame["anomaly_score_global"].rank(pct=True).loc[row.index].iloc[0] * 100
-        if "anomaly_score_global" in frame.columns
-        else None
-    )
-    st.metric("Position percentile (score global)", _format_metric(percentile, "%"))
-
-
-def main() -> None:
-    _init_session_state()
-
-    st.title("OR Performance Analyzer")
-    st.caption("Dashboard EDA corporate multi-onglets pour pilotage OR")
-
-    with st.sidebar:
-        st.header("Section Upload")
-        ie_uploader = st.file_uploader("Fichier IE (Excel)", type=["xlsx", "xls"], key="ie")
-        pt_uploader = st.file_uploader("Fichier Pointage (Excel)", type=["xlsx", "xls"], key="pointage")
-        bo_uploader = st.file_uploader("Fichier BO (Excel)", type=["xlsx", "xls"], key="bo")
-
-        changed = False
-        changed |= _set_uploaded_file("uploaded_ie", "uploaded_ie_name", ie_uploader)
-        changed |= _set_uploaded_file("uploaded_pointage", "uploaded_pointage_name", pt_uploader)
-        changed |= _set_uploaded_file("uploaded_bo", "uploaded_bo_name", bo_uploader)
-
-        if changed:
-            st.session_state["analysis_done"] = False
-            st.session_state["needs_recalc"] = True
-
-        ready = all(
-            [
-                st.session_state["uploaded_ie"],
-                st.session_state["uploaded_pointage"],
-                st.session_state["uploaded_bo"],
-            ]
-        )
-
-        st.subheader("Section Construction dataset")
-        if ready:
-            st.success("Fichiers déjà chargés en session (persistance active).")
-            st.caption(
-                f"IE: {st.session_state['uploaded_ie_name']} | "
-                f"Pointage: {st.session_state['uploaded_pointage_name']} | "
-                f"BO: {st.session_state['uploaded_bo_name']}"
-            )
-        else:
-            st.warning("Veuillez charger les 3 fichiers Excel.")
-
-        run_btn = st.button("Lancer l'analyse", type="primary", disabled=not ready)
-        recalc_btn = st.button("Recalculer analyse", disabled=not ready)
-        reset_btn = st.button("Réinitialiser session")
-
-    if reset_btn:
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
-
-    if not ready:
-        st.info("Chargez les fichiers dans la sidebar. Les données resteront en mémoire pendant la session.")
-        return
-
-    # signature based only on input bytes; this controls rerun necessity
-    new_signature = "|".join(
-        [
-            _file_digest(st.session_state["uploaded_ie"]),
-            _file_digest(st.session_state["uploaded_pointage"]),
-            _file_digest(st.session_state["uploaded_bo"]),
-        ]
-    )
-
-    if st.session_state["input_signature"] != new_signature:
-        st.session_state["analysis_done"] = False
-        st.session_state["needs_recalc"] = True
-        st.session_state["input_signature"] = new_signature
-
-    should_run = run_btn or recalc_btn
-
-    if should_run:
-        analytics = get_dashboard_analytics()
-
-        with st.spinner("Construction dataset + feature engineering + scoring..."):
-            try:
-                dataset_df = build_dataset_cached(
-                    st.session_state["uploaded_ie"],
-                    st.session_state["uploaded_pointage"],
-                    st.session_state["uploaded_bo"],
-                )
-                featured_df = feature_engineering_cached(dataset_df)
-                ruled_df = rule_engine_cached(featured_df)
-                scored_df = score_ml(ruled_df)
-                scored_df["final_anomaly_score"] = (
-                    0.45 * scored_df["rule_anomaly_score"] + 0.55 * (scored_df["ml_anomaly_score"] / 100.0)
-                ).clip(0.0, 1.0)
-                scored_df["final_anomaly_flag"] = scored_df["final_anomaly_score"] >= 0.60
-                scored_df = scored_df.sort_values("final_anomaly_score", ascending=False)
-
-                dashboard_df = analytics.enrich(scored_df)
-
-                st.session_state["scored_df"] = scored_df
-                st.session_state["dashboard_df"] = dashboard_df
-                st.session_state["analysis_done"] = True
-                st.session_state["needs_recalc"] = False
-            except (ScoringError, DashboardAnalyticsError) as exc:
-                st.error(str(exc))
-                with st.expander("Détails techniques"):
-                    st.code(traceback.format_exc())
-                return
-            except Exception as exc:  # pylint: disable=broad-except
-                st.error(f"Erreur inattendue: {exc}")
-                with st.expander("Traceback"):
-                    st.code(traceback.format_exc())
-                return
-
-    if not st.session_state["analysis_done"]:
-        if st.session_state["needs_recalc"]:
-            st.warning("Des fichiers ont changé. Cliquez sur 'Recalculer analyse'.")
-        else:
-            st.info("Cliquez sur 'Lancer l'analyse' pour générer le dashboard.")
-        return
-
-    st.success("Dataset déjà construit. Les filtres n'entraînent pas de recalcul complet.")
-    dashboard_df = st.session_state["dashboard_df"]
-
-    st.subheader("Section Visualisation")
-    tabs = st.tabs(["📊 Vue Globale", "🔎 EDA Avancé", "🚩 Analyse des Anomalies", "🔍 Analyse OR Individuel"])
-
-    with tabs[0]:
-        render_global_tab(dashboard_df)
-
-    with tabs[1]:
-        render_advanced_eda_tab(dashboard_df)
-
-    with tabs[2]:
-        render_anomaly_tab(dashboard_df)
-
-    with tabs[3]:
-        render_individual_or_tab(dashboard_df)
-
-    st.divider()
-    st.subheader("Export")
-    csv_bytes = dashboard_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="Télécharger le dataset enrichi (CSV)",
-        data=csv_bytes,
-        file_name="or_performance_enriched_dataset.csv",
-        mime="text/csv",
-    )
-
-
-if __name__ == "__main__":
-    main()
+# --- TAB 6 : Efficience ---
+with tab_eff:
+    if result.efficience:
+        render_efficience_tab(result.efficience, config)
+    else:
+        st.info("Charger le fichier BO pour activer l'analyse d'efficience.")
