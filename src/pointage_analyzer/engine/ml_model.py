@@ -58,6 +58,8 @@ class IsolationForestModel:
     _pipeline: Pipeline | None = field(default=None, init=False, repr=False)
     _numeric_cols: list[str] = field(default_factory=list, init=False, repr=False)
     _cat_cols: list[str] = field(default_factory=list, init=False, repr=False)
+    _score_min: float = field(default=0.0, init=False, repr=False)
+    _score_max: float = field(default=0.0, init=False, repr=False)
 
     @property
     def is_trained(self) -> bool:
@@ -114,11 +116,27 @@ class IsolationForestModel:
         """Entraîne le modèle sur le dataset OR-level."""
         numeric_cols, cat_cols = self._select_features(frame)
         self._pipeline = self._build_pipeline(numeric_cols, cat_cols)
-        # Stocke la liste des features pour score()
         self._numeric_cols = numeric_cols
         self._cat_cols = cat_cols
         self._pipeline.fit(frame)
+        # Calibre la plage de normalisation sur les données d'entraînement
+        # pour que score() et get_top_features() utilisent la même échelle
+        raw = self._pipeline.decision_function(frame)
+        self._score_min = float(raw.min())
+        self._score_max = float(raw.max())
+        if self._score_min == self._score_max:
+            logger.warning(
+                "Tous les scores Isolation Forest sont identiques — "
+                "ml_score sera 0 pour tous les OR."
+            )
         logger.info(f"Isolation Forest entraîné sur {len(frame)} OR")
+
+    def _normalize(self, raw_scores: np.ndarray) -> np.ndarray:
+        """Normalise les scores IF en [0, 1] avec la plage calibrée à l'entraînement."""
+        score_range = self._score_max - self._score_min
+        if score_range == 0:
+            return np.zeros(len(raw_scores))
+        return (self._score_max - raw_scores) / score_range
 
     def score(self, frame: pd.DataFrame) -> pd.Series:
         """
@@ -130,16 +148,8 @@ class IsolationForestModel:
         if not self.is_trained:
             raise MLModelError("Modèle non entraîné. Appeler .train() d'abord.")
 
-        # IsolationForest: decision_function → négatif = anomalie
         raw_scores = self._pipeline.decision_function(frame)
-        # Normalise en [0, 1] : 0 = normal, 1 = anomalie
-        min_s, max_s = raw_scores.min(), raw_scores.max()
-        if max_s == min_s:
-            normalized = np.zeros(len(raw_scores))
-        else:
-            normalized = (max_s - raw_scores) / (max_s - min_s)
-
-        return pd.Series(normalized, index=frame.index, name="ml_score")
+        return pd.Series(self._normalize(raw_scores), index=frame.index, name="ml_score")
 
     def get_top_features(
         self, frame: pd.DataFrame, n_top: int = 3
@@ -160,8 +170,9 @@ class IsolationForestModel:
         if not numeric_cols:
             return pd.DataFrame(index=frame.index)
 
-        # Base score
-        base_score = self.score(frame).values
+        # Base score — raw pour comparaison sur échelle cohérente
+        base_raw = self._pipeline.decision_function(frame)
+        base_score = self._normalize(base_raw)
 
         results: dict[str, list] = {f"top_feature_{i+1}": [] for i in range(n_top)}
         feature_impacts: list[tuple[str, float]] = []
@@ -169,7 +180,8 @@ class IsolationForestModel:
         for col in numeric_cols[:10]:  # limiter pour performance
             frame_perm = frame.copy()
             frame_perm[col] = frame_perm[col].sample(frac=1, random_state=0).values
-            perm_score = self.score(frame_perm).values
+            perm_raw = self._pipeline.decision_function(frame_perm)
+            perm_score = self._normalize(perm_raw)  # même échelle que base_score
             impact = np.abs(perm_score - base_score).mean()
             feature_impacts.append((col, impact))
 
