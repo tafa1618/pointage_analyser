@@ -228,7 +228,7 @@ with tab_anomalies:
         c2.plotly_chart(rule_chart, use_container_width=True)
 
     st.subheader("Détail des OR anomaliques")
-    df_anom = df_or[df_or.get("anomaly_flag", pd.Series(False))] if "anomaly_flag" in df_or.columns else pd.DataFrame()
+    df_anom = df_or[df_or["anomaly_flag"]] if "anomaly_flag" in df_or.columns else pd.DataFrame()
     if not df_anom.empty:
         anom_cols = [c for c in [
             "or_id", "severity", "score_final", "rule_score_total", "ml_score",
