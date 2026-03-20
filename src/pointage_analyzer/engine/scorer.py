@@ -224,9 +224,11 @@ class ORPerformanceScorer:
         # ==============================================================
         # 5. Métadonnées de traçabilité
         # ==============================================================
+        nb_or_total = len(df_or)
+        nb_or_avec_bo = int(df_or["has_bo"].sum()) if "has_bo" in df_or.columns else 0
         metadata = {
-            "nb_or_total": len(df_or),
-            "nb_or_anomalies": int(df_or.get("anomaly_flag", pd.Series(False)).sum()),
+            "nb_or_total": nb_or_total,
+            "nb_or_anomalies": int(df_or["anomaly_flag"].sum()) if "anomaly_flag" in df_or.columns else 0,
             "nb_techniciens": (
                 df_presence["salarie_nom"].nunique()
                 if "salarie_nom" in df_presence.columns else 0
@@ -235,8 +237,9 @@ class ORPerformanceScorer:
                 df_presence["date"].nunique()
                 if "date" in df_presence.columns else 0
             ),
-            "nb_or_avec_bo": int(df_or.get("has_bo", pd.Series(False)).sum()),
-            "nb_or_avec_ie": int(df_or.get("has_ie", pd.Series(False)).sum()),
+            "nb_or_avec_bo": nb_or_avec_bo,
+            "nb_or_sans_bo": nb_or_total - nb_or_avec_bo,
+            "nb_or_avec_ie": int(df_or["has_ie"].sum()) if "has_ie" in df_or.columns else 0,
             "nb_or_efficience_evaluables": (
                 efficience_result.nb_or_evaluables if efficience_result else 0
             ),
@@ -273,10 +276,11 @@ class ORPerformanceScorer:
 
         df["anomaly_flag"] = df["score_final"] >= self.config.anomaly_threshold
 
-        # Sévérité lisible
+        # Sévérité lisible — seuils basés sur anomaly_threshold de la config
+        t = self.config.anomaly_threshold  # ex: 0.60
         df["severity"] = pd.cut(
             df["score_final"],
-            bins=[-0.001, 0.30, 0.60, 0.80, 1.001],
+            bins=[-0.001, t * 0.5, t, t + (1 - t) * 0.5, 1.001],
             labels=["Normal", "Faible", "Modéré", "Critique"],
         )
 
