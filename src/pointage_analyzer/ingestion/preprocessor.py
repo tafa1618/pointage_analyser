@@ -81,9 +81,10 @@ class DataPreprocessor:
                 f"[{dataset_name}] Format Excel invalide: {exc}"
             ) from exc
         except ImportError as exc:
-            raise PreprocessingError(
-                "[{dataset_name}] openpyxl requis: pip install openpyxl"
+             raise PreprocessingError(
+                f"[{dataset_name}] openpyxl requis: pip install openpyxl"
             ) from exc
+
         except Exception as exc:  # noqa: BLE001
             raise PreprocessingError(
                 f"[{dataset_name}] Erreur lecture Excel: {exc}"
