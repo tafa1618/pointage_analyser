@@ -175,7 +175,7 @@ st.markdown("---")
 # -----------------------------------------------------------------------
 # ONGLETS
 # -----------------------------------------------------------------------
-tab_vue, tab_anomalies, tab_equipes, tab_tech, tab_exh, tab_eff = st.tabs([
+tab_vue, tab_anomalies, tab_equipes, tab_tech, tab_exh, tab_eff, tab_prod = st.tabs([
     "📋 Vue OR",
     "🚨 Anomalies",
     "🏢 Équipes",
