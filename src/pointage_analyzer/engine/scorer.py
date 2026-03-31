@@ -51,6 +51,7 @@ class PipelineResult:
     efficience: EfficienceResult | None = None
     productivite: ProductiviteResult | None = None 
     pt_harm: pd.DataFrame = field(default_factory=pd.DataFrame)
+    bo_harm: pd.DataFrame = field(default_factory=pd.DataFrame)
     metadata: dict = field(default_factory=dict)  
       
     
@@ -269,6 +270,7 @@ class ORPerformanceScorer:
             efficience=efficience_result,
             productivite=productivite_result,
             pt_harm=pt_harm,
+            bo_harm=bo_df if bo_df is not None else pd.DataFrame(),
             metadata=metadata,
         )
 
