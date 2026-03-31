@@ -85,6 +85,10 @@ def render_productivite_tab(result: ProductiviteResult) -> None:
     _render_matrice_heatmap(result)
     st.divider()
     _render_tableau_techniciens(result)
+    st.divider()
+    _render_simulateur_global(result)
+    st.divider()
+    _render_analyse_proxy(result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -428,3 +432,323 @@ def _render_tableau_techniciens(result: ProductiviteResult) -> None:
         mime="text/csv",
         key="prod_export_csv",
     )
+
+def _render_simulateur_global(result: ProductiviteResult) -> None:
+    """
+    Section 6 — Simulateur productivité globale dynamique.
+    Sélection d'équipes → recalcul du KPI global en temps réel.
+    """
+    st.markdown("### 🎛️ Simulateur Productivité Globale")
+    st.caption(
+        "Sélectionnez les équipes à inclure dans le calcul — "
+        "utile pour exclure le CRC ou toute autre équipe du périmètre."
+    )
+
+    df_eq = result.par_equipe.copy()
+    if df_eq.empty:
+        st.info("Pas de données équipes.")
+        return
+
+    equipes_toutes = sorted(df_eq["equipe"].tolist())
+
+    # Identifier les équipes CRC connues par défaut
+    crc_keywords = ["remontage transmission", "crc"]
+    crc_default  = [
+        e for e in equipes_toutes
+        if any(k in e.lower() for k in crc_keywords)
+    ]
+
+    col_sel, col_kpi = st.columns([2, 1])
+
+    with col_sel:
+        equipes_sel = st.multiselect(
+            "Équipes incluses dans le calcul",
+            options=equipes_toutes,
+            default=[e for e in equipes_toutes if e not in crc_default],
+            key="prod_sim_equipes",
+        )
+
+    # Recalcul dynamique sur les équipes sélectionnées
+    if not equipes_sel:
+        with col_kpi:
+            st.warning("Sélectionnez au moins une équipe.")
+        return
+
+    df_sel      = df_eq[df_eq["equipe"].isin(equipes_sel)]
+    f_sel       = df_sel["facturable"].sum()
+    nf_sel      = df_sel["non_facturable"].sum()
+    denom_sel   = f_sel + nf_sel
+    prod_sel    = f_sel / denom_sel if denom_sel > 0 else 0.0
+
+    # Productivité de référence (toutes équipes)
+    f_all     = df_eq["facturable"].sum()
+    nf_all    = df_eq["non_facturable"].sum()
+    prod_all  = f_all / (f_all + nf_all) if (f_all + nf_all) > 0 else 0.0
+    delta     = prod_sel - prod_all
+
+    with col_kpi:
+        st.metric(
+            label="🎯 Productivité périmètre sélectionné",
+            value=_pct(prod_sel),
+            delta=f"{delta:+.1%} vs toutes équipes",
+        )
+
+    # Détail des équipes incluses / exclues
+    df_eq["statut"] = df_eq["equipe"].apply(
+        lambda e: "✅ Incluse" if e in equipes_sel else "❌ Exclue"
+    )
+    df_eq["contribution"] = (
+        df_eq["facturable"] / df_eq["non_facturable"].add(df_eq["facturable"]).replace(0, float("nan"))
+    ).fillna(0)
+
+    df_sim_display = df_eq[[
+        "statut", "equipe", "facturable", "non_facturable", "productivite"
+    ]].copy().rename(columns={
+        "statut":        "Statut",
+        "equipe":        "Équipe",
+        "facturable":    "Fact. (h)",
+        "non_facturable": "Non Fact. (h)",
+        "productivite":  "Productivité",
+    })
+
+    def _color_statut(val):
+        if val == "✅ Incluse":
+            return "background-color:#d4edda;color:#155724"
+        return "background-color:#f8d7da;color:#721c24"
+
+    styled = (
+        df_sim_display.style
+        .format({"Fact. (h)": "{:.1f}", "Non Fact. (h)": "{:.1f}", "Productivité": "{:.1%}"})
+        .applymap(_color_statut, subset=["Statut"])
+    )
+    st.dataframe(styled, use_container_width=True, height=350)
+
+
+def _render_analyse_proxy(result: ProductiviteResult) -> None:
+    """
+    Section 7 — Analyse corrélation & impact équipe proxy.
+    Corrélation productivité équipe vs global + impact si retrait.
+    """
+    import numpy as np
+
+    st.markdown("### 🔬 Analyse Équipe Proxy")
+    st.caption(
+        "Quelle équipe tire (ou plombe) la productivité globale ? "
+        "Corrélation mensuelle + impact simulé si retrait."
+    )
+
+    df_em  = result.par_equipe_mois.copy()   # equipe × mois
+    df_eq  = result.par_equipe.copy()         # equipe YTD
+    df_m   = result.par_mois.copy()           # global × mois
+
+    if df_em.empty or df_m.empty:
+        st.info("Pas assez de données pour l'analyse proxy.")
+        return
+
+    # ── Corrélation mensuelle équipe vs global ────────────────────────
+    pivot = df_em.pivot_table(
+        index="mois", columns="equipe", values="productivite"
+    ).fillna(0)
+    pivot = pivot.join(df_m.set_index("mois")["productivite"].rename("_global"))
+
+    corr_series = pivot.corr()["_global"].drop("_global").sort_values(ascending=False)
+    corr_df = corr_series.reset_index()
+    corr_df.columns = ["equipe", "correlation"]
+    corr_df = corr_df.dropna()
+
+    # ── Impact retrait équipe sur prod YTD ───────────────────────────
+    f_all  = df_eq["facturable"].sum()
+    nf_all = df_eq["non_facturable"].sum()
+    prod_all = f_all / (f_all + nf_all) if (f_all + nf_all) > 0 else 0.0
+
+    impacts = []
+    for _, row in df_eq.iterrows():
+        f_sans  = f_all  - row["facturable"]
+        nf_sans = nf_all - row["non_facturable"]
+        prod_sans = f_sans / (f_sans + nf_sans) if (f_sans + nf_sans) > 0 else 0.0
+        impacts.append({
+            "equipe":     row["equipe"],
+            "prod_sans":  prod_sans,
+            "delta":      prod_sans - prod_all,
+        })
+
+    impact_df = pd.DataFrame(impacts).sort_values("delta", ascending=False)
+
+    # ── Fusion corrélation + impact ───────────────────────────────────
+    proxy_df = corr_df.merge(impact_df, on="equipe", how="outer")
+    proxy_df["prod_ytd"] = proxy_df["equipe"].map(
+        df_eq.set_index("equipe")["productivite"]
+    )
+
+    # ── Affichage côte à côte ─────────────────────────────────────────
+    col_corr, col_impact = st.columns(2)
+
+    with col_corr:
+        st.markdown("#### 📊 Corrélation vs productivité globale")
+        st.caption("Calculée sur les mois disponibles (mensuel)")
+
+        if corr_df.empty:
+            st.info("Pas assez de mois pour calculer une corrélation.")
+        else:
+            corr_sorted = corr_df.sort_values("correlation", ascending=True)
+            equipes_c   = corr_sorted["equipe"].tolist()
+            corr_vals   = [round(v, 3) for v in corr_sorted["correlation"].tolist()]
+            colors_c    = [
+                "rgba(40,167,69,0.7)"  if v >= 0.7  else
+                "rgba(253,126,20,0.7)" if v >= 0.3  else
+                "rgba(220,53,69,0.7)"
+                for v in corr_vals
+            ]
+
+            html_corr = f"""
+            <div style="position:relative;height:{max(250, len(equipes_c)*38)}px">
+              <canvas id="chartCorr"></canvas>
+            </div>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+            <script>
+            new Chart(document.getElementById('chartCorr'), {{
+              type: 'bar',
+              data: {{
+                labels: {equipes_c},
+                datasets: [{{
+                  label: 'Corrélation',
+                  data: {corr_vals},
+                  backgroundColor: {colors_c},
+                  borderRadius: 4,
+                }}]
+              }},
+              options: {{
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {{ legend: {{ display: false }} }},
+                scales: {{
+                  x: {{ min: -1, max: 1,
+                         ticks: {{ callback: v => v.toFixed(1) }} }}
+                }}
+              }}
+            }});
+            </script>
+            """
+            st.components.v1.html(html_corr, height=max(270, len(equipes_c) * 40))
+
+    with col_impact:
+        st.markdown("#### ⚖️ Impact si équipe retirée du périmètre")
+        st.caption(f"Référence : productivité globale YTD = {_pct(prod_all)}")
+
+        impact_sorted = impact_df.sort_values("delta", ascending=True)
+        equipes_i     = impact_sorted["equipe"].tolist()
+        delta_vals    = [round(v * 100, 2) for v in impact_sorted["delta"].tolist()]
+        colors_i      = [
+            "rgba(40,167,69,0.7)"  if v > 0 else
+            "rgba(220,53,69,0.7)"
+            for v in delta_vals
+        ]
+
+        html_impact = f"""
+        <div style="position:relative;height:{max(250, len(equipes_i)*38)}px">
+          <canvas id="chartImpact"></canvas>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+        <script>
+        new Chart(document.getElementById('chartImpact'), {{
+          type: 'bar',
+          data: {{
+            labels: {equipes_i},
+            datasets: [{{
+              label: 'Delta productivité (%)',
+              data: {delta_vals},
+              backgroundColor: {colors_i},
+              borderRadius: 4,
+            }}]
+          }},
+          options: {{
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {{
+              legend: {{ display: false }},
+              tooltip: {{
+                callbacks: {{
+                  label: ctx => (ctx.raw > 0 ? '+' : '') + ctx.raw + '%'
+                }}
+              }}
+            }},
+            scales: {{
+              x: {{
+                ticks: {{ callback: v => (v > 0 ? '+' : '') + v + '%' }}
+              }}
+            }}
+          }}
+        }});
+        </script>
+        """
+        st.components.v1.html(html_impact, height=max(270, len(equipes_i) * 40))
+
+    # ── Tableau récapitulatif proxy ───────────────────────────────────
+    st.markdown("#### 📋 Tableau récapitulatif")
+
+    proxy_display = proxy_df[[
+        "equipe", "prod_ytd", "correlation", "delta"
+    ]].copy().rename(columns={
+        "equipe":      "Équipe",
+        "prod_ytd":    "Prod. YTD",
+        "correlation": "Corrélation vs global",
+        "delta":       "Impact si retrait",
+    }).sort_values("Impact si retrait", ascending=True)
+
+    def _color_delta(val):
+        if pd.isna(val):
+            return ""
+        if val > 0.02:
+            return f"background-color:{_COULEUR_CRITIQUE};color:white"   # retire → améliore → équipe plombe
+        elif val > 0:
+            return "background-color:#fff3cd;color:#856404"
+        elif val < -0.02:
+            return f"background-color:{_COULEUR_EXCELLENT};color:white"  # retire → détériore → équipe tire
+        return ""
+
+    def _color_corr(val):
+        if pd.isna(val):
+            return ""
+        if val >= 0.7:
+            return f"background-color:{_COULEUR_EXCELLENT};color:white"
+        elif val >= 0.3:
+            return "background-color:#fff3cd;color:#856404"
+        elif val < 0:
+            return f"background-color:{_COULEUR_FAIBLE};color:white"
+        return ""
+
+    styled_proxy = (
+        proxy_display.style
+        .format({
+            "Prod. YTD":            "{:.1%}",
+            "Corrélation vs global": lambda v: f"{v:.2f}" if pd.notna(v) else "—",
+            "Impact si retrait":     lambda v: f"{v:+.1%}" if pd.notna(v) else "—",
+        })
+        .applymap(_color_delta, subset=["Impact si retrait"])
+        .applymap(_color_corr,  subset=["Corrélation vs global"])
+    )
+    st.dataframe(styled_proxy, use_container_width=True)
+
+    # ── Interprétation automatique ────────────────────────────────────
+    st.markdown("#### 💡 Interprétation")
+
+    # Équipe qui tire le plus (retrait dégrade le plus)
+    tire = impact_df.loc[impact_df["delta"].idxmin()]
+    # Équipe qui plombe le plus (retrait améliore le plus)
+    plombe = impact_df.loc[impact_df["delta"].idxmax()]
+
+    col_i1, col_i2 = st.columns(2)
+    with col_i1:
+        st.success(
+            f"**🏆 Équipe locomotive : {tire['equipe']}**\n\n"
+            f"Sans elle, la productivité globale baisserait de **{abs(tire['delta']):.1%}** "
+            f"({_pct(prod_all)} → {_pct(tire['prod_sans'])})."
+        )
+    with col_i2:
+        st.error(
+            f"**⚠️ Équipe qui plombe : {plombe['equipe']}**\n\n"
+            f"Sans elle, la productivité globale monterait de **{plombe['delta']:.1%}** "
+            f"({_pct(prod_all)} → {_pct(plombe['prod_sans'])})."
+        )
