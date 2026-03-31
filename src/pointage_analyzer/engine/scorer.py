@@ -268,6 +268,7 @@ class ORPerformanceScorer:
             df_presence=df_presence,
             efficience=efficience_result,
             productivite=productivite_result,
+            pt_harm=pt_harm,
             metadata=metadata,
         )
 
