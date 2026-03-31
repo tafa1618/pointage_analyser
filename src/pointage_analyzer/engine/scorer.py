@@ -1,5 +1,4 @@
 """
-"""
 Orchestrateur principal — point d'entrée unique du pipeline complet.
 
 Quatre pipelines indépendants :
