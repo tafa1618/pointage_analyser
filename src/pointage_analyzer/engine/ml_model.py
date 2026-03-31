@@ -114,6 +114,7 @@ class IsolationForestModel:
 
     def train(self, frame: pd.DataFrame) -> None:
         """Entraîne le modèle sur le dataset OR-level."""
+        np.random.seed(self.config.random_state) #fixer le seed pour la reproductibilité
         numeric_cols, cat_cols = self._select_features(frame)
         self._pipeline = self._build_pipeline(numeric_cols, cat_cols)
         self._numeric_cols = numeric_cols
