@@ -4,6 +4,9 @@ Onglet Productivité — dashboard Streamlit.
 Consomme un ProductiviteResult produit par ProductiviteBuilder.
 Aucun calcul métier ici — uniquement affichage.
 
+Formule affichée : Facturable / (Facturable + Non Facturable)
+Les heures Allouées sont exclues du dénominateur.
+
 Structure de l'onglet :
   1. KPI cards globales YTD
   2. Évolution mensuelle (courbe)
@@ -17,7 +20,6 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-# Import relatif — ajuster si le module est dans un sous-package différent
 try:
     from pointage_analyzer.pipeline.productivite_builder import (
         ProductiviteResult,
@@ -26,7 +28,6 @@ try:
         SEUIL_FAIBLE,
     )
 except ImportError:
-    # Fallback pour exécution standalone / tests
     from productivite_builder import (  # type: ignore[no-redef]
         ProductiviteResult,
         SEUIL_EXCELLENT,
@@ -34,19 +35,13 @@ except ImportError:
         SEUIL_FAIBLE,
     )
 
-# ─── Couleurs & constantes ────────────────────────────────────────────────
+# ─── Couleurs ────────────────────────────────────────────────────────────────
 _COULEUR_EXCELLENT = "#28a745"
 _COULEUR_BON       = "#fd7e14"
 _COULEUR_FAIBLE    = "#dc3545"
 _COULEUR_CRITIQUE  = "#6c757d"
-_COULEUR_PRIMAIRE  = "#002060"   # Navy CAT
-_COULEUR_ACCENT    = "#FFCD11"   # Jaune CAT
-
-_PALETTE_EQUIPES = [
-    "#002060", "#FFCD11", "#1f77b4", "#ff7f0e", "#2ca02c",
-    "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
-    "#bcbd22", "#17becf", "#aec7e8",
-]
+_COULEUR_PRIMAIRE  = "#002060"
+_COULEUR_ACCENT    = "#FFCD11"
 
 
 def _pct(val: float) -> str:
@@ -64,36 +59,22 @@ def _couleur_perf(ratio: float) -> str:
 
 
 def render_productivite_tab(result: ProductiviteResult) -> None:
-    """
-    Point d'entrée appelé depuis app.py.
-
-    Usage dans app.py :
-        from pointage_analyzer.dashboard.productivite import render_productivite_tab
-        with tab_productivite:
-            render_productivite_tab(pipeline_result.productivite)
-    """
-    if result is None or result.ytd_hr_totale == 0:
+    """Point d'entrée appelé depuis app.py."""
+    if result is None or (result.ytd_facturable + result.ytd_non_facturable) == 0:
         st.info("Aucune donnée de productivité disponible. Lancez l'analyse d'abord.")
         return
 
-    # ── En-tête ──────────────────────────────────────────────────────────
     st.markdown("## ⚡ Productivité Techniciens")
     st.caption(
         f"Période : **{result.periode_debut}** → **{result.periode_fin}** | "
         f"{result.nb_techniciens} techniciens | {result.nb_equipes} équipes"
     )
 
-    # ── Section 1 : KPI cards YTD ─────────────────────────────────────────
     _render_kpi_cards(result)
-
     st.divider()
-
-    # ── Section 2 : Évolution mensuelle ──────────────────────────────────
     _render_evolution_mensuelle(result)
-
     st.divider()
 
-    # ── Section 3 : Productivité par équipe ──────────────────────────────
     col_eq, col_eq_mois = st.columns([1, 1])
     with col_eq:
         _render_barres_equipes(result)
@@ -101,13 +82,8 @@ def render_productivite_tab(result: ProductiviteResult) -> None:
         _render_equipe_mois(result)
 
     st.divider()
-
-    # ── Section 4 : Matrice technicien × mois ────────────────────────────
     _render_matrice_heatmap(result)
-
     st.divider()
-
-    # ── Section 5 : Tableau détaillé techniciens ─────────────────────────
     _render_tableau_techniciens(result)
 
 
@@ -117,7 +93,7 @@ def render_productivite_tab(result: ProductiviteResult) -> None:
 
 def _render_kpi_cards(result: ProductiviteResult) -> None:
     """4 métriques globales YTD."""
-    prod = result.ytd_productivite
+    prod    = result.ytd_productivite
     couleur = _couleur_perf(prod)
 
     c1, c2, c3, c4 = st.columns(4)
@@ -126,9 +102,8 @@ def _render_kpi_cards(result: ProductiviteResult) -> None:
         st.metric(
             label="🎯 Productivité YTD",
             value=_pct(prod),
-            help="Σ Heures Facturables / Σ Hr_Totale",
+            help="Σ Facturable / (Σ Facturable + Σ Non Facturable) — heures Allouées exclues",
         )
-        # Barre de progression colorée
         st.markdown(
             f"""
             <div style="background:#e9ecef;border-radius:4px;height:8px;margin-top:-12px">
@@ -147,21 +122,21 @@ def _render_kpi_cards(result: ProductiviteResult) -> None:
 
     with c3:
         st.metric(
-            label="🕐 Heures Totales",
-            value=f"{result.ytd_hr_totale:,.0f}h",
+            label="📉 Heures Non Fact.",
+            value=f"{result.ytd_non_facturable:,.0f}h",
+            help="Heures non facturables uniquement (Allouées exclues)",
         )
 
     with c4:
-        heures_non_fact = result.ytd_hr_totale - result.ytd_facturable
         st.metric(
-            label="📉 Heures Non Fact.",
-            value=f"{heures_non_fact:,.0f}h",
-            help="Hr_Totale − Facturable",
+            label="📋 Heures Allouées",
+            value=f"{result.ytd_allouee:,.0f}h",
+            help="Formations, déplacements, réunions — exclues du calcul de productivité",
         )
 
 
 def _render_evolution_mensuelle(result: ProductiviteResult) -> None:
-    """Courbe d'évolution mensuelle avec Chart.js via st.components."""
+    """Courbe d'évolution mensuelle."""
     st.markdown("### 📈 Évolution mensuelle")
 
     df = result.par_mois
@@ -169,10 +144,10 @@ def _render_evolution_mensuelle(result: ProductiviteResult) -> None:
         st.info("Pas de données mensuelles.")
         return
 
-    mois_labels = df["mois"].tolist()
-    prod_values = [round(v * 100, 1) for v in df["productivite"].tolist()]
-    fact_values = [round(v, 1) for v in df["facturable"].tolist()]
-    tot_values  = [round(v, 1) for v in df["hr_totale"].tolist()]
+    mois_labels  = df["mois"].tolist()
+    prod_values  = [round(v * 100, 1) for v in df["productivite"].tolist()]
+    fact_values  = [round(v, 1) for v in df["facturable"].tolist()]
+    nonfact_values = [round(v, 1) for v in df["non_facturable"].tolist()]
 
     html = f"""
     <div style="position:relative;height:320px">
@@ -195,8 +170,8 @@ def _render_evolution_mensuelle(result: ProductiviteResult) -> None:
           }},
           {{
             type: 'bar',
-            label: 'Heures Totales',
-            data: {tot_values},
+            label: 'Heures Non Facturables',
+            data: {nonfact_values},
             backgroundColor: 'rgba(0, 32, 96, 0.2)',
             yAxisID: 'yH',
             order: 3,
@@ -308,17 +283,12 @@ def _render_equipe_mois(result: ProductiviteResult) -> None:
         index="equipe", columns="mois", values="productivite", aggfunc="first"
     ).fillna(0)
 
-    # Formate en pourcentage avec style conditionnel
     def _style_cell(v):
-        c = _couleur_perf(v)
+        c   = _couleur_perf(v)
         txt = "white" if v >= SEUIL_EXCELLENT or v < SEUIL_FAIBLE else "black"
         return f"background-color:{c};color:{txt};text-align:center"
 
-    styled = (
-        pivot.style
-        .format("{:.0%}")
-        .applymap(_style_cell)
-    )
+    styled = pivot.style.format("{:.0%}").applymap(_style_cell)
     st.dataframe(styled, use_container_width=True)
 
 
@@ -331,7 +301,6 @@ def _render_matrice_heatmap(result: ProductiviteResult) -> None:
         st.info("Pas de données.")
         return
 
-    # Filtre équipe
     equipes_dispo = sorted(df["equipe"].unique().tolist())
     equipe_sel = st.selectbox(
         "Filtrer par équipe",
@@ -350,23 +319,17 @@ def _render_matrice_heatmap(result: ProductiviteResult) -> None:
         index="technicien", columns="mois", values="productivite", aggfunc="first"
     ).fillna(0)
 
-    # Tri par productivité moyenne décroissante
     pivot["_moy"] = pivot.mean(axis=1)
     pivot = pivot.sort_values("_moy", ascending=False).drop(columns="_moy")
 
     def _style_heatmap(v):
-        c = _couleur_perf(v)
+        c   = _couleur_perf(v)
         txt = "white" if v >= SEUIL_EXCELLENT or v < SEUIL_FAIBLE else "black"
         return f"background-color:{c};color:{txt};text-align:center;font-weight:bold"
 
-    styled = (
-        pivot.style
-        .format("{:.0%}")
-        .applymap(_style_heatmap)
-    )
+    styled = pivot.style.format("{:.0%}").applymap(_style_heatmap)
     st.dataframe(styled, use_container_width=True, height=min(600, (len(pivot) + 1) * 36))
 
-    # Légende
     st.markdown(
         f"""
         <div style="display:flex;gap:16px;margin-top:4px;font-size:12px">
@@ -389,6 +352,9 @@ def _render_tableau_techniciens(result: ProductiviteResult) -> None:
         st.info("Pas de données techniciens.")
         return
 
+    # Dénominateur réel = Facturable + Non Facturable (sans Allouées)
+    df["base_calcul"] = df["facturable"] + df["non_facturable"]
+
     # Filtres
     col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
     with col_f1:
@@ -410,18 +376,22 @@ def _render_tableau_techniciens(result: ProductiviteResult) -> None:
     if perf_filter != "Tous":
         df = df[df["perf_label"] == perf_filter]
 
-    # Affichage
+    # Affichage — colonnes claires, dénominateur explicite
     df_display = df[[
-        "technicien", "equipe", "facturable", "hr_totale", "productivite", "perf_label", "nb_jours"
+        "technicien", "equipe",
+        "facturable", "non_facturable", "base_calcul",
+        "productivite", "perf_label", "nb_jours",
     ]].copy()
+
     df_display = df_display.rename(columns={
-        "technicien": "Technicien",
-        "equipe": "Équipe",
-        "facturable": "Fact. (h)",
-        "hr_totale": "Total (h)",
-        "productivite": "Productivité",
-        "perf_label": "Performance",
-        "nb_jours": "Jours",
+        "technicien":    "Technicien",
+        "equipe":        "Équipe",
+        "facturable":    "Fact. (h)",
+        "non_facturable": "Non Fact. (h)",
+        "base_calcul":   "Base calcul (h)",
+        "productivite":  "Productivité",
+        "perf_label":    "Performance",
+        "nb_jours":      "Jours",
     })
 
     def _color_perf(val):
@@ -435,14 +405,21 @@ def _render_tableau_techniciens(result: ProductiviteResult) -> None:
 
     styled = (
         df_display.style
-        .format({"Fact. (h)": "{:.1f}", "Total (h)": "{:.1f}", "Productivité": "{:.1%}"})
+        .format({
+            "Fact. (h)":      "{:.1f}",
+            "Non Fact. (h)":  "{:.1f}",
+            "Base calcul (h)": "{:.1f}",
+            "Productivité":   "{:.1%}",
+        })
         .applymap(_color_perf, subset=["Performance"])
     )
 
     st.dataframe(styled, use_container_width=True, height=400)
-    st.caption(f"{len(df_display)} technicien(s) affiché(s)")
+    st.caption(
+        f"{len(df_display)} technicien(s) affiché(s) — "
+        f"Productivité = Fact. / Base calcul (heures Allouées exclues)"
+    )
 
-    # Export CSV
     csv = df_display.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         label="⬇️ Exporter CSV",
