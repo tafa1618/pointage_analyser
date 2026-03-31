@@ -38,12 +38,11 @@ def compute_global_kpis(df_or: pd.DataFrame, df_presence: pd.DataFrame) -> Globa
     # EC = En Cours | TT = Travaux Terminés | AF = Attente Facturation
     # CP = Comptabilisé (seul statut réellement clôturé — irréversible)
     nb_ouverts = int(
-    df_or["position"].isin(["EC", "TT", "AF"]).sum()
-    ) if "position" in df_or.columns else 0
+    (df_or["position"] == "EC").sum()
+  ) if "position" in df_or.columns else 0
     nb_clotures = int(
     (df_or["position"] == "CP").sum()
-) if "position" in df_or.columns else 0
-
+  ) if "position" in df_or.columns else 0
     nb_tech = (
         df_presence["salarie_nom"].nunique()
         if "salarie_nom" in df_presence.columns else 0
