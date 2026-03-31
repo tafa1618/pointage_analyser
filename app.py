@@ -33,6 +33,9 @@ from pointage_analyzer.dashboard.visualizations import (
 )
 from pointage_analyzer.dashboard.exhaustivite import render_exhaustivite_tab
 from pointage_analyzer.dashboard.efficience import render_efficience_tab
+from pointage_analyzer.dashboard.productivite import render_productivite_tab
+
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -179,6 +182,7 @@ tab_vue, tab_anomalies, tab_equipes, tab_tech, tab_exh, tab_eff = st.tabs([
     "👷 Techniciens",
     "📅 Exhaustivité",
     "⚡ Efficience",
+    "🎯 Productivité"
 ])
 
 # --- TAB 1 : Vue OR ---
@@ -270,3 +274,9 @@ with tab_eff:
         render_efficience_tab(result.efficience, config)
     else:
         st.info("Charger le fichier BO pour activer l'analyse d'efficience.")
+# --- TAB 7 : Productivité ---
+with tab_prod:
+    if result.productivite:
+        render_productivite_tab(result.productivite)
+    else:
+        st.info("Charger le fichier Pointage pour activer l'analyse de productivité.")
