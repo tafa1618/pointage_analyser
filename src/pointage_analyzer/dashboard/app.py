@@ -33,6 +33,8 @@ from pointage_analyzer.dashboard.visualizations import (
 )
 from pointage_analyzer.dashboard.exhaustivite import render_exhaustivite_tab
 from pointage_analyzer.dashboard.efficience import render_efficience_tab
+from pointage_analyzer.dashboard.productivite import render_productivite_tab
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -149,7 +151,7 @@ if run or "pipeline_result" not in st.session_state:
             st.code(traceback.format_exc())
         st.stop()
 
-result = st.session_state["pipeline_result"]
+result      = st.session_state["pipeline_result"]
 df_or       = result.df_or
 df_presence = result.df_presence
 
@@ -159,26 +161,26 @@ df_presence = result.df_presence
 kpis = compute_global_kpis(df_or, df_presence)
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("🔢 OR Total",         f"{kpis.nb_or_total}")
-k2.metric("🚨 Anomalies",        f"{kpis.nb_anomalies}",
-          f"{kpis.taux_anomalie:.1%}")
-k3.metric("🔓 OR Ouverts",       f"{kpis.nb_or_ouverts}")
-k4.metric("🔒 OR Clôturés",      f"{kpis.nb_or_clotures}")
-k5.metric("👷 Techniciens",      f"{kpis.nb_techniciens}")
-k6.metric("⏱️ Heures totales",   f"{kpis.heures_totales:,.0f}h")
+k1.metric("🔢 OR Total",       f"{kpis.nb_or_total}")
+k2.metric("🚨 Anomalies",      f"{kpis.nb_anomalies}", f"{kpis.taux_anomalie:.1%}")
+k3.metric("🔓 OR Ouverts",     f"{kpis.nb_or_ouverts}")
+k4.metric("🔒 OR Clôturés",    f"{kpis.nb_or_clotures}")
+k5.metric("👷 Techniciens",    f"{kpis.nb_techniciens}")
+k6.metric("⏱️ Heures totales", f"{kpis.heures_totales:,.0f}h")
 
 st.markdown("---")
 
 # -----------------------------------------------------------------------
 # ONGLETS
 # -----------------------------------------------------------------------
-tab_vue, tab_anomalies, tab_equipes, tab_tech, tab_exh, tab_eff = st.tabs([
+tab_vue, tab_anomalies, tab_equipes, tab_tech, tab_exh, tab_eff, tab_prod = st.tabs([
     "📋 Vue OR",
     "🚨 Anomalies",
     "🏢 Équipes",
     "👷 Techniciens",
     "📅 Exhaustivité",
     "⚡ Efficience",
+    "🎯 Productivité",
 ])
 
 # --- TAB 1 : Vue OR ---
@@ -234,8 +236,11 @@ with tab_anomalies:
             "or_id", "severity", "score_final", "rule_score_total", "ml_score",
             "rule_anomaly_types", "technicien_principal_nom", "equipe_principale",
         ] if c in df_anom.columns]
-        st.dataframe(df_anom[anom_cols].sort_values("score_final", ascending=False),
-                     use_container_width=True, height=400)
+        st.dataframe(
+            df_anom[anom_cols].sort_values("score_final", ascending=False),
+            use_container_width=True,
+            height=400,
+        )
 
 # --- TAB 3 : Équipes ---
 with tab_equipes:
@@ -270,3 +275,10 @@ with tab_eff:
         render_efficience_tab(result.efficience, config)
     else:
         st.info("Charger le fichier BO pour activer l'analyse d'efficience.")
+
+# --- TAB 7 : Productivité ---
+with tab_prod:
+    if result.productivite:
+        render_productivite_tab(result.productivite)
+    else:
+        st.info("Charger le fichier Pointage pour activer l'analyse de productivité.")
