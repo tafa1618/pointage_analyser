@@ -1,10 +1,12 @@
 """
+"""
 Orchestrateur principal — point d'entrée unique du pipeline complet.
 
-Trois pipelines indépendants :
-  1. Pipeline OR-level   (df_or)       → scoring anomalies
-  2. Pipeline Présence   (df_presence) → contrôle d'exhaustivité
-  3. Pipeline Efficience (efficience)  → ratios pointé/référence
+Quatre pipelines indépendants :
+  1. Pipeline OR-level      (df_or)        → scoring anomalies
+  2. Pipeline Présence      (df_presence)  → contrôle d'exhaustivité
+  3. Pipeline Productivité  (productivite) → ratios heures facturables/totales
+  4. Pipeline Efficience    (efficience)   → ratios pointé/référence
 
 Aucune logique métier dans l'UI (dashboard/app.py appellera uniquement ce module).
 """
@@ -44,7 +46,9 @@ class PipelineResult:
     df_or: pd.DataFrame           # Dataset OR-level avec scores anomalie
     df_presence: pd.DataFrame     # Matrice présence brute (technicien × jour)
     efficience: EfficienceResult | None = None  # Résultat module efficience
+    productivite: ProductiviteResult | None = None
     metadata: dict = field(default_factory=dict)  # Statistiques de trace
+    
 
 
 @dataclass
@@ -178,6 +182,16 @@ class ORPerformanceScorer:
             logger.warning(f"Erreur pipeline efficience (non critique): {exc}")
 
         # ==============================================================
+        # ==============================================================
+        # 3. PIPELINE PRODUCTIVITÉ
+        # ==============================================================
+        logger.info("=== PIPELINE PRODUCTIVITÉ ===")
+        productivite_result: ProductiviteResult | None = None
+        try:
+            prod_builder = ProductiviteBuilder()
+            productivite_result = prod_builder.build(pt_harm)
+        except Exception as exc:
+            logger.warning(f"Erreur pipeline productivité (non critique): {exc}")
         # 4. PIPELINE OR-LEVEL
         # ==============================================================
         logger.info("=== PIPELINE OR-LEVEL ===")
@@ -245,6 +259,7 @@ class ORPerformanceScorer:
             df_or=df_or,
             df_presence=df_presence,
             efficience=efficience_result,
+            productivite=productivite_result,
             metadata=metadata,
         )
 
