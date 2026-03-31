@@ -1,4 +1,4 @@
-import numpy as np
+
 """
 Orchestrateur principal — point d'entrée unique du pipeline complet.
 
@@ -13,6 +13,7 @@ Aucune logique métier dans l'UI (dashboard/app.py appellera uniquement ce modul
 
 from __future__ import annotations
 import traceback
+import numpy as np
 
 import logging
 from dataclasses import dataclass, field
