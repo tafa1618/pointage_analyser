@@ -49,9 +49,10 @@ class PipelineResult:
     df_or: pd.DataFrame
     df_presence: pd.DataFrame
     efficience: EfficienceResult | None = None
-    productivite: ProductiviteResult | None = None  # ← ajout
-    metadata: dict = field(default_factory=dict)  # Statistiques de trace
-    TEST_ERREUR_VOLONTAIRE: str = "je suis le bon scorer"  
+    productivite: ProductiviteResult | None = None 
+    pt_harm: pd.DataFrame = field(default_factory=pd.DataFrame)
+    metadata: dict = field(default_factory=dict)  
+      
     
 
 
