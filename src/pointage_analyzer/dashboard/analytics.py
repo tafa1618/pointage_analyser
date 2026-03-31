@@ -35,12 +35,14 @@ def compute_global_kpis(df_or: pd.DataFrame, df_presence: pd.DataFrame) -> Globa
     nb_anomalies = int(df_or.get("anomaly_flag", pd.Series(False)).sum())
     taux = nb_anomalies / nb_total if nb_total > 0 else 0.0
 
+    # EC = En Cours | TT = Travaux Terminés | AF = Attente Facturation
+    # CP = Comptabilisé (seul statut réellement clôturé — irréversible)
     nb_ouverts = int(
-        (df_or.get("position", pd.Series("")) == "EC").sum()
+    df_or["position"].isin(["EC", "TT", "AF"]).sum()
     ) if "position" in df_or.columns else 0
     nb_clotures = int(
-        (df_or.get("position", pd.Series("")) == "CP").sum()
-    ) if "position" in df_or.columns else 0
+    (df_or["position"] == "CP").sum()
+) if "position" in df_or.columns else 0f "position" in df_or.columns else 0
 
     nb_tech = (
         df_presence["salarie_nom"].nunique()
