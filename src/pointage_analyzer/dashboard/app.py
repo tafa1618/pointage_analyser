@@ -101,7 +101,7 @@ def _file_hash(f) -> str | None:
     f.seek(0)
     return h
 
-_run_pipeline.clear()
+
 @st.cache_data(show_spinner="⏳ Analyse en cours…")
 def _run_pipeline(file_bytes, sheet_ie, sheet_pointage, sheet_bo, contamination, rule_weight):
     """Wrappé dans cache_data pour memoïsation. Un seul fichier, 3 feuilles."""
@@ -119,6 +119,7 @@ def _run_pipeline(file_bytes, sheet_ie, sheet_pointage, sheet_bo, contamination,
                       ie_sheet=sheet_ie,
                       pointage_sheet=sheet_pointage,
                       bo_sheet=sheet_bo)
+_run_pipeline.clear()
 
 
 # -----------------------------------------------------------------------
