@@ -537,6 +537,46 @@ def _render_analyse_proxy(result: ProductiviteResult) -> None:
         "Corrélation mensuelle + impact simulé si retrait."
     )
 
+    # ── Note méthodologique ───────────────────────────────────────────
+    with st.expander("📖 Méthodologie — comment lire cette analyse ?", expanded=False):
+        st.markdown("""
+**Deux indicateurs complémentaires sont calculés :**
+
+---
+
+**1. Corrélation mensuelle (colonne "Corrélation vs global")**
+
+Pour chaque équipe, on mesure si sa productivité mensuelle évolue dans le **même sens** que la productivité globale de l'atelier.
+
+- Méthode : corrélation de Pearson entre la série mensuelle de l'équipe et la série mensuelle globale
+- **+1.00** : l'équipe monte et descend exactement comme le global → elle *suit* (ou *tire*) la tendance
+- **-1.00** : l'équipe descend quand le global monte → comportement inverse
+- **None** : l'équipe a une productivité constante (ex: 100% tous les mois) → variance nulle, corrélation impossible à calculer
+
+> ⚠️ **Limite importante** : une corrélation n'est statistiquement fiable qu'à partir d'environ **12 points** (12 mois). 
+> En dessous de 6 mois, les valeurs sont indicatives uniquement — elles reflètent la tendance observée 
+> mais ne permettent pas de conclure avec certitude.
+
+---
+
+**2. Impact si retrait (colonne "Impact si retrait")**
+
+On simule le retrait de chaque équipe du périmètre et on recalcule la productivité globale sans elle.
+
+- **Delta positif (vert)** : retirer cette équipe *améliore* la prod globale → l'équipe **plombe** le résultat
+- **Delta négatif (rouge)** : retirer cette équipe *dégrade* la prod globale → l'équipe **tire** le résultat vers le haut
+- Formule : `(Σ Fact. sans équipe) / (Σ Fact. + Σ Non Fact. sans équipe)`
+
+> ✅ Cet indicateur est **100% fiable** quel que soit le nombre de mois — c'est un calcul YTD exact, pas une estimation statistique.
+
+---
+
+**En résumé pour expliquer à votre manager :**
+> *"La corrélation mesure si une équipe suit la même tendance que l'atelier mois par mois. 
+> L'impact mesure concrètement combien de points de productivité on gagnerait ou perdrait 
+> si on retirait cette équipe du périmètre. L'impact est le chiffre le plus solide."*
+        """)
+
     df_em  = result.par_equipe_mois.copy()   # equipe × mois
     df_eq  = result.par_equipe.copy()         # equipe YTD
     df_m   = result.par_mois.copy()           # global × mois
@@ -544,6 +584,20 @@ def _render_analyse_proxy(result: ProductiviteResult) -> None:
     if df_em.empty or df_m.empty:
         st.info("Pas assez de données pour l'analyse proxy.")
         return
+
+    # ── Warning fiabilité corrélation ─────────────────────────────────
+    nb_mois = len(df_m)
+    if nb_mois < 6:
+        st.warning(
+            f"⚠️ **Fiabilité limitée des corrélations** — seulement **{nb_mois} mois** de données disponibles. "
+            f"Il faut au moins **6 mois** pour une corrélation indicative, **12 mois** pour une corrélation fiable. "
+            f"Privilégiez la colonne **'Impact si retrait'** qui est un calcul exact indépendant du nombre de mois."
+        )
+    elif nb_mois < 12:
+        st.info(
+            f"ℹ️ **{nb_mois} mois** de données — corrélations indicatives. "
+            f"La fiabilité statistique sera atteinte à 12 mois."
+        )
 
     # ── Corrélation mensuelle équipe vs global ────────────────────────
     pivot = df_em.pivot_table(
