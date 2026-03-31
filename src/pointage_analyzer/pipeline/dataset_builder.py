@@ -1,16 +1,28 @@
-"""Pipeline dataset_builder — construit le dataset OR-level (1 ligne = 1 OR)."""
+"""Pipeline dataset_builder — construit le dataset OR-level (1 ligne = 1 OR).
+
+Architecture simplifiée (sans IE) :
+    - Base principale = Pointage (agrégé par OR, sans les OR=0)
+    - BO enrichit en LEFT JOIN (données financières + statut ouvert/clôturé)
+    - Statut OR : Date Clôture IS NULL → Ouvert | NOT NULL → Clôturé
+    - 1 ligne = 1 OR, garanti par assertion finale
+
+Raison de la suppression de IE :
+    IE n'exporte que les OR de l'année en cours. Les OR ouverts en années
+    antérieures et toujours actifs n'y apparaissent pas → position/type_or
+    manquants pour ~300 OR. BO couvre l'historique complet.
+"""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from pointage_analyzer.core.config import (
     BO_COLUMN_MAP,
-    IE_COLUMN_MAP,
     POINTAGE_COLUMN_MAP,
     ScoringConfig,
 )
@@ -26,18 +38,20 @@ class DatasetBuilderError(Exception):
 @dataclass(slots=True)
 class ORDatasetBuilder:
     """
-    Construit un dataset OR-level depuis IE, Pointage et BO.
+    Construit un dataset OR-level depuis Pointage et BO uniquement.
 
     Logique de jointure :
         - Base principale = Pointage (agrégé par OR, sans les OR=0)
-        - IE enrichit en LEFT JOIN (dimensions métier)
-        - BO enrichit en LEFT JOIN (données financières)
+        - BO enrichit en LEFT JOIN (données financières + statut)
+        - Statut OR dérivé de Date Clôture BO :
+            * IS NULL     → position = "EC" (Ouvert)
+            * IS NOT NULL → position = "CP" (Clôturé)
         - 1 ligne = 1 OR, garanti par assertion finale
 
     Attribution technicien :
         - Technicien principal = salarié avec le plus de Hr_Totale sur l'OR
         - Équipe principale    = équipe du technicien principal
-        - Les autres techniciens sont stockés dans `techniciens_secondaires`
+        - Les autres techniciens sont stockés dans `techniciens_liste`
     """
 
     preprocessor: DataPreprocessor
@@ -49,70 +63,70 @@ class ORDatasetBuilder:
 
     def build(
         self,
-        ie_df: pd.DataFrame,
+        ie_df: pd.DataFrame | None,        # ignoré — conservé pour compatibilité signature
         pointage_df: pd.DataFrame,
-        bo_df: pd.DataFrame,
+        bo_df: pd.DataFrame | None,
     ) -> pd.DataFrame:
         """
         Construit le dataset final OR-level.
 
         Args:
-            ie_df: DataFrame IE (colonnes harmonisées)
+            ie_df:       ignoré (conservé pour compatibilité avec scorer.py)
             pointage_df: DataFrame Pointage complet (colonnes harmonisées)
-            bo_df: DataFrame BO (colonnes harmonisées)
+            bo_df:       DataFrame BO (colonnes harmonisées)
 
         Returns:
             DataFrame avec 1 ligne par OR, toutes les dimensions enrichies
         """
-        logger.info("=== Construction dataset OR-level ===")
+        if ie_df is not None:
+            logger.info("IE reçu mais ignoré — pipeline fonctionne sans IE.")
+
+        logger.info("=== Construction dataset OR-level (Pointage + BO) ===")
 
         # 1. Agréger Pointage (base principale)
         pt_agg = self._aggregate_pointage(pointage_df)
         logger.info(f"Pointage agrégé: {len(pt_agg)} OR uniques")
 
-        # 2. Préparer IE (dimensions métier)
-        ie_base = self._prepare_ie_base(ie_df) if ie_df is not None else pd.DataFrame()
-        logger.info(f"IE préparé: {len(ie_base)} OR")
-
-        # 3. Préparer BO (données financières)
+        # 2. Préparer BO (données financières + statut)
         bo_base = self._aggregate_bo(bo_df) if bo_df is not None else pd.DataFrame()
         logger.info(f"BO agrégé: {len(bo_base)} OR")
 
-        # 4. Jointures LEFT depuis Pointage
+        # 3. Jointure LEFT Pointage ← BO
         final = pt_agg.copy()
-
-        if not ie_base.empty and "or_id" in ie_base.columns:
-            before = len(final)
-            final = final.merge(
-                ie_base, on="or_id", how="left", suffixes=("", "_ie")
-            )
-            logger.info(
-                f"Après LEFT JOIN IE: {final['or_id'].nunique()} OR "
-                f"({len(final[final['type_or'].notna()])} enrichis)"
-                if "type_or" in final.columns else f"JOIN IE: {len(final)} lignes"
-            )
 
         if not bo_base.empty and "or_id" in bo_base.columns:
             final = final.merge(
                 bo_base, on="or_id", how="left", suffixes=("", "_bo")
             )
             bo_col = "montant_total" if "montant_total" in final.columns else None
-            enriched_bo = final[bo_col].notna().sum() if bo_col else 0
+            enriched_bo = int(final[bo_col].notna().sum()) if bo_col else 0
             logger.info(f"Après LEFT JOIN BO: {enriched_bo} OR enrichis financièrement")
+
+        # 4. Statut OR dérivé de BO (date_cloture)
+        # Date Clôture IS NULL → ouvert | NOT NULL → clôturé
+        if "date_cloture_min" in final.columns:
+            final["position"] = final["date_cloture_min"].apply(
+                lambda d: "EC" if pd.isna(d) else "CP"
+            )
+        else:
+            # Fallback si BO absent : tous marqués EC (ouvert)
+            final["position"] = "EC"
+            logger.warning(
+                "date_cloture absente de BO — tous les OR marqués 'EC' par défaut."
+            )
 
         # 5. Flags de complétude
         final["has_pointage"] = True  # Toujours True (base = Pointage)
         final["has_bo"] = (
-            final["montant_total"].notna() if "montant_total" in final.columns
+            final["montant_total"].notna()
+            if "montant_total" in final.columns
             else pd.Series(False, index=final.index)
         )
-        final["has_ie"] = (
-            final["type_or"].notna() if "type_or" in final.columns
-            else pd.Series(False, index=final.index)
-        )
+        final["has_ie"] = False  # IE supprimé — flag conservé pour compatibilité
+
+        # OR clôturé dans BO mais sans montant facturé = anomalie
         final["or_cloture_sans_finance"] = (
-            (final.get("position", pd.Series("", index=final.index)) == "CP")
-            & ~final["has_bo"]
+            (final["position"] == "CP") & ~final["has_bo"]
         )
 
         # 6. Assertion finale : 1 ligne = 1 OR
@@ -123,27 +137,31 @@ class ORDatasetBuilder:
                 f"Exemples: {dupes[:5]}"
             )
 
+        nb_ouverts  = (final["position"] == "EC").sum()
+        nb_clotures = (final["position"] == "CP").sum()
         logger.info(
             f"=== Dataset final: {len(final)} OR | "
-            f"avec IE: {final.get('has_ie', pd.Series(False)).sum()} | "
+            f"Ouverts: {nb_ouverts} | Clôturés: {nb_clotures} | "
             f"avec BO: {final['has_bo'].sum()} ==="
         )
         return final
+
+    # ──────────────────────────────────────────────────────────────────
+    # Agrégation Pointage
+    # ──────────────────────────────────────────────────────────────────
 
     def _aggregate_pointage(self, pointage_df: pd.DataFrame) -> pd.DataFrame:
         """
         Agrège le Pointage à 1 ligne par OR.
 
         Étapes :
-        1. Filtre OR valides (or_id != None, correspond aux vraies interventions)
+        1. Filtre OR valides (or_id != None)
         2. Agrège métriques d'heures et dates
         3. Identifie le technicien principal (max Hr_Totale)
-        4. Identifie l'équipe principale (équipe du tech principal)
-        5. Calcule délais depuis IE date (si disponible)
+        4. Calcule statistiques journalières
         """
         pt = pointage_df.copy()
 
-        # Filtre lignes avec OR valide (OR=0 / sans OR = hors-OR)
         pt_or = pt[pt["or_id"].notna()].copy()
         logger.info(
             f"Pointage: {len(pt)} lignes total, "
@@ -155,13 +173,12 @@ class ORDatasetBuilder:
                 "Aucune ligne Pointage avec OR valide après filtrage."
             )
 
-        # Colonnes heures
-        hr_col = "hr_totale" if "hr_totale" in pt_or.columns else "heure_realisee"
+        hr_col   = "hr_totale" if "hr_totale" in pt_or.columns else "heure_realisee"
         date_col = "date_saisie" if "date_saisie" in pt_or.columns else None
 
         if hr_col not in pt_or.columns:
             raise DatasetBuilderError(
-                f"Colonne d'heures introuvable (cherché: hr_totale, heure_realisee). "
+                f"Colonne d'heures introuvable. "
                 f"Colonnes disponibles: {list(pt_or.columns)}"
             )
 
@@ -227,14 +244,13 @@ class ORDatasetBuilder:
                 - technicien_principal_num
                 - equipe_principale
                 - nb_techniciens
-                - techniciens_liste (tous, séparés par |)
+                - techniciens_liste
         """
-        has_nom = "salarie_nom" in pt_or.columns
-        has_num = "salarie_num" in pt_or.columns
+        has_nom   = "salarie_nom" in pt_or.columns
+        has_num   = "salarie_num" in pt_or.columns
         has_equipe = "equipe_nom" in pt_or.columns
 
         if not has_nom and not has_num:
-            # Pas d'info technicien dans ce fichier
             return pd.DataFrame({"or_id": pt_or["or_id"].unique()})
 
         group_cols = ["or_id"]
@@ -245,7 +261,6 @@ class ORDatasetBuilder:
         if has_equipe:
             group_cols.append("equipe_nom")
 
-        # Heures par (OR, technicien)
         tech_hours = (
             pt_or.groupby(group_cols, as_index=False, dropna=False)
             [hr_col]
@@ -253,8 +268,7 @@ class ORDatasetBuilder:
             .rename(columns={hr_col: "_tech_heures"})
         )
 
-        # Technicien principal = max heures par OR
-        idx_max = tech_hours.groupby("or_id")["_tech_heures"].idxmax()
+        idx_max   = tech_hours.groupby("or_id")["_tech_heures"].idxmax()
         principal = tech_hours.loc[idx_max].copy()
 
         rename_cols = {"or_id": "or_id"}
@@ -269,20 +283,16 @@ class ORDatasetBuilder:
             columns=["_tech_heures"], errors="ignore"
         )
 
-        # Nb techniciens par OR
         nb_tech = (
             pt_or.groupby("or_id")["salarie_nom" if has_nom else "salarie_num"]
             .nunique()
             .reset_index()
-            .rename(
-                columns={
-                    "salarie_nom": "nb_techniciens",
-                    "salarie_num": "nb_techniciens",
-                }
-            )
+            .rename(columns={
+                "salarie_nom": "nb_techniciens",
+                "salarie_num": "nb_techniciens",
+            })
         )
 
-        # Liste complète des techniciens (pour traçabilité)
         if has_nom:
             tech_liste = (
                 pt_or.groupby("or_id")["salarie_nom"]
@@ -292,49 +302,31 @@ class ORDatasetBuilder:
             )
             principal = principal.merge(tech_liste, on="or_id", how="left")
 
-        result = principal.merge(nb_tech, on="or_id", how="left")
-        return result
+        return principal.merge(nb_tech, on="or_id", how="left")
 
-    def _prepare_ie_base(self, ie_df: pd.DataFrame) -> pd.DataFrame:
-        """Déduplique IE à 1 ligne par OR (premier par date si doublons)."""
-        if "or_id" not in ie_df.columns:
-            logger.warning("IE sans colonne or_id — enrichissement désactivé.")
-            return pd.DataFrame()
-
-        ie = ie_df.copy()
-
-        # Déduplique par OR (garde la ligne la plus récente si doublons)
-        date_col = next(
-            (c for c in ["date_extraction", "date_creation", "date"] if c in ie.columns),
-            None,
-        )
-        if date_col:
-            ie["_sort_date"] = pd.to_datetime(ie[date_col], errors="coerce")
-            ie = ie.sort_values(["or_id", "_sort_date"], ascending=[True, False])
-            ie = ie.drop(columns=["_sort_date"])
-
-        ie_dedup = ie.groupby("or_id", as_index=False).first()
-
-        # Normalise Position
-        if "position" in ie_dedup.columns:
-            ie_dedup["position"] = ie_dedup["position"].astype(str).str.strip().str.upper()
-
-        logger.info(
-            f"IE dédupliqué: {len(ie_dedup)} OR uniques "
-            f"(depuis {len(ie_df)} lignes brutes)"
-        )
-        return ie_dedup
+    # ──────────────────────────────────────────────────────────────────
+    # Agrégation BO
+    # ──────────────────────────────────────────────────────────────────
 
     def _aggregate_bo(self, bo_df: pd.DataFrame) -> pd.DataFrame:
-        """Agrège BO à 1 ligne par OR (somme des montants, min/max dates)."""
+        """
+        Agrège BO à 1 ligne par OR.
+
+        Colonnes produites :
+            - Montants financiers (somme)
+            - Dates clôture/facture (min/max) → statut ouvert/clôturé
+            - Type intervention, localisation (first)
+            - temps_prevu_devis, temps_vendu (somme)
+        """
         if "or_id" not in bo_df.columns:
             logger.warning("BO sans colonne or_id — enrichissement désactivé.")
             return pd.DataFrame()
 
         bo = bo_df.copy()
 
-        agg_dict: dict[str, Any] = {"or_id": ("or_id", "size")}
+        agg_dict: dict[str, Any] = {}
 
+        # Colonnes numériques → somme
         numeric_bo_cols = [
             "montant_total", "montant_mo", "montant_pieces", "montant_frais",
             "temps_prevu_devis", "temps_vendu",
@@ -345,6 +337,8 @@ class ORDatasetBuilder:
                 bo[col] = pd.to_numeric(bo[col], errors="coerce").fillna(0.0)
                 agg_dict[col] = (col, "sum")
 
+        # Colonnes dates → min/max
+        # date_cloture est la clé pour dériver le statut ouvert/clôturé
         date_bo_cols = ["date_cloture", "date_facture", "date_creation"]
         for col in date_bo_cols:
             if col in bo.columns:
@@ -352,17 +346,34 @@ class ORDatasetBuilder:
                 agg_dict[f"{col}_min"] = (col, "min")
                 agg_dict[f"{col}_max"] = (col, "max")
 
-        # Colonnes texte (prendre la première valeur non-nulle)
-        for col in ["modele_equipement", "type_materiel", "localisation", "service"]:
+        # Colonnes texte → première valeur non-nulle
+        text_bo_cols = [
+            "type_intervention", "localisation", "service",
+            "modele_equipement", "type_materiel",
+            "nature",            # si mappé depuis BO_COLUMN_MAP
+            "type_or",           # si mappé depuis BO_COLUMN_MAP
+        ]
+        for col in text_bo_cols:
             if col in bo.columns:
                 agg_dict[col] = (col, "first")
 
-        bo_agg = bo.groupby("or_id").agg(**{
-            k: v for k, v in agg_dict.items() if k != "or_id"
-        }).reset_index()
+        if not agg_dict:
+            logger.warning("BO : aucune colonne exploitable trouvée.")
+            return pd.DataFrame({"or_id": bo["or_id"].unique()})
+
+        bo_agg = (
+            bo.groupby("or_id")
+            .agg(**{k: v for k, v in agg_dict.items()})
+            .reset_index()
+        )
+
+        # Log statut ouvert/clôturé si date_cloture disponible
+        if "date_cloture_min" in bo_agg.columns:
+            nb_ouverts  = bo_agg["date_cloture_min"].isna().sum()
+            nb_clotures = bo_agg["date_cloture_min"].notna().sum()
+            logger.info(
+                f"BO statut — Ouverts (date_cloture nulle): {nb_ouverts} | "
+                f"Clôturés: {nb_clotures}"
+            )
 
         return bo_agg
-
-
-# Type hint helper
-from typing import Any  # noqa: E402 (kept at bottom to avoid circular issues)
