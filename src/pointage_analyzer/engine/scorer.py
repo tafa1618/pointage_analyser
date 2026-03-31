@@ -1,3 +1,4 @@
+import numpy as np
 """
 Orchestrateur principal — point d'entrée unique du pipeline complet.
 
