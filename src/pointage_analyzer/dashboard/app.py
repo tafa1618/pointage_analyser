@@ -34,6 +34,7 @@ from pointage_analyzer.dashboard.visualizations import (
 from pointage_analyzer.dashboard.exhaustivite import render_exhaustivite_tab
 from pointage_analyzer.dashboard.efficience import render_efficience_tab
 from pointage_analyzer.dashboard.productivite import render_productivite_tab
+from pointage_analyzer.dashboard.techniciens import render_techniciens_tab
 
 
 
@@ -257,16 +258,18 @@ with tab_equipes:
         st.info("Données équipe indisponibles (colonne equipe_principale manquante).")
 
 # --- TAB 4 : Techniciens ---
+# with tab_tech:
+#     st.subheader("👷 Performance par Technicien")
+#     tech_stats = build_technicien_stats(df_or)
+#     if not tech_stats.empty:
+#         fig_tech = render_technicien_chart(tech_stats)
+#         if fig_tech:
+#             st.plotly_chart(fig_tech, use_container_width=True)
+#         st.dataframe(tech_stats, use_container_width=True)
+#     else:
+#         st.info("Données technicien indisponibles.")
 with tab_tech:
-    st.subheader("👷 Performance par Technicien")
-    tech_stats = build_technicien_stats(df_or)
-    if not tech_stats.empty:
-        fig_tech = render_technicien_chart(tech_stats)
-        if fig_tech:
-            st.plotly_chart(fig_tech, use_container_width=True)
-        st.dataframe(tech_stats, use_container_width=True)
-    else:
-        st.info("Données technicien indisponibles.")
+    render_techniciens_tab(pt_harm, bo_df)
 
 # --- TAB 5 : Exhaustivité ---
 with tab_exh:
