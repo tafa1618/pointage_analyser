@@ -12,6 +12,7 @@ Aucune logique métier dans l'UI (dashboard/app.py appellera uniquement ce modul
 """
 
 from __future__ import annotations
+import traceback
 
 import logging
 from dataclasses import dataclass, field
@@ -193,6 +194,8 @@ class ORPerformanceScorer:
             productivite_result = prod_builder.build(pt_harm)
         except Exception as exc:
             logger.warning(f"Erreur pipeline productivité (non critique): {exc}")
+            
+            traceback.print_exc()
         # 4. PIPELINE OR-LEVEL
         # ==============================================================
         logger.info("=== PIPELINE OR-LEVEL ===")
