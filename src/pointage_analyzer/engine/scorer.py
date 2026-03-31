@@ -31,6 +31,7 @@ from pointage_analyzer.pipeline.dataset_builder import ORDatasetBuilder
 from pointage_analyzer.pipeline.exhaustivite_builder import ExhaustiviteBuilder
 from pointage_analyzer.pipeline.efficience_builder import EfficienceBuilder, EfficienceResult
 from pointage_analyzer.pipeline.feature_engineering import FeatureEngineer
+from pointage_analyzer.pipeline.productivite_builder import ProductiviteBuilder, ProductiviteResult
 
 logger = logging.getLogger(__name__)
 
