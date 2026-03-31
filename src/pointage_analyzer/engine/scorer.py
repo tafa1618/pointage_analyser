@@ -44,10 +44,10 @@ class ScoringError(Exception):
 class PipelineResult:
     """Résultats des trois pipelines."""
 
-    df_or: pd.DataFrame           # Dataset OR-level avec scores anomalie
-    df_presence: pd.DataFrame     # Matrice présence brute (technicien × jour)
-    efficience: EfficienceResult | None = None  # Résultat module efficience
-    productivite: ProductiviteResult | None = None
+    df_or: pd.DataFrame
+    df_presence: pd.DataFrame
+    efficience: EfficienceResult | None = None
+    productivite: ProductiviteResult | None = None  # ← ajout
     metadata: dict = field(default_factory=dict)  # Statistiques de trace
     
 
