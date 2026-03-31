@@ -1,8 +1,11 @@
 """
 Pipeline Productivité — analyse des heures facturables vs totales.
 
-Formule officielle (alignée sur l'outil HTML existant) :
-    Productivité = Σ Facturable / Σ Hr_Totale
+Formule officielle :
+    Productivité = Σ Facturable / (Σ Facturable + Σ Non Facturable)
+
+Les heures Allouées (formations, déplacements, réunions) sont exclues
+du dénominateur car elles ne reflètent pas la productivité réelle.
 
 Trois niveaux de granularité :
   - Global YTD
@@ -23,18 +26,20 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # ─── Colonnes attendues dans le DataFrame Pointage harmonisé ───────────────
-COL_DATE      = "date_saisie"           # après harmonisation DataPreprocessor
-COL_TECHNOM   = "salarie_nom"
-COL_EQUIPE    = "equipe_nom"
-COL_FACTURABLE  = "facturable"
-COL_HR_TOTALE   = "hr_totale"
+COL_DATE           = "date_saisie"
+COL_TECHNOM        = "salarie_nom"
+COL_EQUIPE         = "equipe_nom"
+COL_FACTURABLE     = "facturable"
+COL_NON_FACTURABLE = "non_facturable"
+COL_HR_TOTALE      = "hr_totale"
 
 # Colonnes brutes (fallback si le DataFrame n'est pas encore harmonisé)
-COL_DATE_RAW    = "Saisie heures - Date"
-COL_TECHNOM_RAW = "Salarié - Nom"
-COL_EQUIPE_RAW  = "Salarié - Equipe(Nom)"
-COL_FACTURABLE_RAW = "Facturable"
-COL_HR_TOTALE_RAW  = "Hr_Totale"
+COL_DATE_RAW           = "Saisie heures - Date"
+COL_TECHNOM_RAW        = "Salarié - Nom"
+COL_EQUIPE_RAW         = "Salarié - Equipe(Nom)"
+COL_FACTURABLE_RAW     = "Facturable"
+COL_NON_FACTURABLE_RAW = "Non Facturable"
+COL_HR_TOTALE_RAW      = "Hr_Totale"
 
 # Seuils de performance (alignés sur l'outil HTML)
 SEUIL_EXCELLENT = 0.60   # ≥ 60 %
@@ -47,9 +52,11 @@ class ProductiviteResult:
     """Conteneur des résultats du pipeline productivité."""
 
     # KPIs globaux YTD
-    ytd_productivite: float = 0.0
-    ytd_facturable:   float = 0.0
-    ytd_hr_totale:    float = 0.0
+    ytd_productivite:   float = 0.0
+    ytd_facturable:     float = 0.0
+    ytd_non_facturable: float = 0.0
+    ytd_allouee:        float = 0.0
+    ytd_hr_totale:      float = 0.0
 
     # DataFrames résultats
     par_mois:        pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -115,11 +122,15 @@ class ProductiviteBuilder:
         result = ProductiviteResult()
 
         # ── KPIs globaux YTD ──────────────────────────────────────────────
-        result.ytd_facturable = df["_facturable"].sum()
-        result.ytd_hr_totale  = df["_hr_totale"].sum()
+        result.ytd_facturable     = df["_facturable"].sum()
+        result.ytd_non_facturable = df["_non_facturable"].sum()
+        result.ytd_hr_totale      = df["_hr_totale"].sum()
+        result.ytd_allouee        = result.ytd_hr_totale - result.ytd_facturable - result.ytd_non_facturable
+
+        denominateur = result.ytd_facturable + result.ytd_non_facturable
         result.ytd_productivite = (
-            result.ytd_facturable / result.ytd_hr_totale
-            if result.ytd_hr_totale > 0 else 0.0
+            result.ytd_facturable / denominateur
+            if denominateur > 0 else 0.0
         )
 
         # ── Métadonnées période ───────────────────────────────────────────
@@ -137,7 +148,9 @@ class ProductiviteBuilder:
 
         logger.info(
             f"Productivité YTD: {result.ytd_productivite:.1%} | "
-            f"{result.ytd_facturable:.0f}h fact / {result.ytd_hr_totale:.0f}h tot"
+            f"{result.ytd_facturable:.0f}h fact / "
+            f"{result.ytd_non_facturable:.0f}h non-fact | "
+            f"{result.ytd_allouee:.0f}h allouées (exclues)"
         )
 
         return result
@@ -177,6 +190,10 @@ class ProductiviteBuilder:
             _pick(COL_FACTURABLE, COL_FACTURABLE_RAW), errors="coerce"
         ).fillna(0.0)
 
+        out["_non_facturable"] = pd.to_numeric(
+            _pick(COL_NON_FACTURABLE, COL_NON_FACTURABLE_RAW), errors="coerce"
+        ).fillna(0.0)
+
         out["_hr_totale"] = pd.to_numeric(
             _pick(COL_HR_TOTALE, COL_HR_TOTALE_RAW), errors="coerce"
         ).fillna(0.0)
@@ -198,13 +215,20 @@ class ProductiviteBuilder:
     # ──────────────────────────────────────────────────────────────────────
 
     def _prod_agg(self, group: pd.core.groupby.DataFrameGroupBy) -> pd.DataFrame:
-        """Agrégation standard: facturable, hr_totale, productivite, label."""
+        """
+        Agrégation standard.
+        Productivité = Facturable / (Facturable + Non Facturable)
+        Les heures Allouées sont exclues du dénominateur.
+        """
         agg = group.agg(
             facturable=("_facturable", "sum"),
+            non_facturable=("_non_facturable", "sum"),
             hr_totale=("_hr_totale", "sum"),
         ).reset_index()
+
+        denominateur = agg["facturable"] + agg["non_facturable"]
         agg["productivite"] = (
-            agg["facturable"] / agg["hr_totale"].replace(0, float("nan"))
+            agg["facturable"] / denominateur.replace(0, float("nan"))
         ).fillna(0.0)
         agg["perf_label"] = agg["productivite"].apply(_label_perf)
         return agg
