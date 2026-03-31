@@ -50,6 +50,7 @@ class PipelineResult:
     efficience: EfficienceResult | None = None
     productivite: ProductiviteResult | None = None  # ← ajout
     metadata: dict = field(default_factory=dict)  # Statistiques de trace
+    TEST_ERREUR_VOLONTAIRE: str = "je suis le bon scorer"  
     
 
 
