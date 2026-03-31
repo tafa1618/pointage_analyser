@@ -91,7 +91,7 @@ class IsolationForestModel:
                 n_estimators=self.config.n_estimators,
                 contamination=self.config.contamination,
                 random_state=self.config.random_state,
-                n_jobs=-1,
+                n_jobs=1,
             )),
         ])
 
