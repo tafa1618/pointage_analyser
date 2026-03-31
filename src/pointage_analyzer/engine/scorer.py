@@ -94,6 +94,7 @@ class ORPerformanceScorer:
         Returns:
             PipelineResult avec df_or et df_presence
         """
+        np.random.seed(self.config.random_state) #fixer un seed global
         preprocessor = DataPreprocessor(config=self.config)
 
         # ==============================================================
