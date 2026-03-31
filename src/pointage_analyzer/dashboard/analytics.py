@@ -42,7 +42,7 @@ def compute_global_kpis(df_or: pd.DataFrame, df_presence: pd.DataFrame) -> Globa
     ) if "position" in df_or.columns else 0
     nb_clotures = int(
     (df_or["position"] == "CP").sum()
-) if "position" in df_or.columns else 0f "position" in df_or.columns else 0
+) if "position" in df_or.columns else 0
 
     nb_tech = (
         df_presence["salarie_nom"].nunique()
