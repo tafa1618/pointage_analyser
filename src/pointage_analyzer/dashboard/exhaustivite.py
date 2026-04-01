@@ -428,10 +428,10 @@ def _build_export_excel(
  
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
  
-    # Tous les jours de la période (pour avoir les absents aussi)
+    # Période globale — pour avoir un calendrier cohérent entre toutes les équipes
     date_min = df["date"].min()
     date_max = df["date"].max()
-    tous_jours = pd.date_range(start=date_min, end=date_max, freq="D")
+    tous_jours_global = pd.date_range(start=date_min, end=date_max, freq="D")
  
     output = BytesIO()
  
@@ -462,6 +462,11 @@ def _build_export_excel(
  
             # Normaliser les dates pour éviter les problèmes de timezone/précision
             df_eq["date"] = pd.to_datetime(df_eq["date"]).dt.normalize()
+ 
+            # Jours de la période pour cette équipe spécifiquement
+            eq_date_min = df_eq["date"].min()
+            eq_date_max = df_eq["date"].max()
+            tous_jours = pd.date_range(start=eq_date_min, end=eq_date_max, freq="D")
             tous_jours_norm = pd.DatetimeIndex([d.normalize() for d in tous_jours])
  
             pivot_presence = df_eq.pivot_table(
