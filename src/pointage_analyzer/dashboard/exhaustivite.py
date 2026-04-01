@@ -259,7 +259,7 @@ def _render_export_section(df_presence: pd.DataFrame, builder: "ExhaustiviteBuil
     if st.button("⬇️ Générer et télécharger l'Excel", type="primary", key="export_btn"):
         with st.spinner("Génération en cours…"):
             try:
-                excel_bytes = _build_export_excel(df_presence, equipes_export, periode_export)
+                excel_bytes = _build_export_excel_v2(df_presence, equipes_export, periode_export)
                 nom_fichier = _nom_fichier_export(equipes_export, periode_export)
                 st.download_button(
                     label=f"📄 Télécharger {nom_fichier}",
@@ -310,7 +310,7 @@ def _filter_for_export(df_presence: pd.DataFrame, equipes: list[str], periode: s
     return df
 
 
-def _build_export_excel(df_presence: pd.DataFrame, equipes: list[str], periode: str) -> bytes:
+def _build_export_excel_v2(df_presence: pd.DataFrame, equipes: list[str], periode: str) -> bytes:
     from io import BytesIO
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
