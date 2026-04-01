@@ -7,6 +7,7 @@ Toute la logique est dans pipeline/exhaustivite_builder.py.
 
 from __future__ import annotations
 
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -153,6 +154,8 @@ def render_exhaustivite_tab(df_presence: pd.DataFrame, config: ScoringConfig) ->
             use_container_width=True,
             height=350,
         )
+    st.markdown("---")
+    _render_export_section(df_presence, builder)
 
 
 def _render_heatmap_calendar(
@@ -278,3 +281,329 @@ def _render_monthly_summary_chart(
         showlegend=False,
     )
     st.plotly_chart(fig, use_container_width=True)
+
+"""
+Fonction d'export exhaustivité — à ajouter à la fin de exhaustivite.py.
+Remplace la fin du fichier à partir de la section TABLEAU DÉTAILLÉ.
+"""
+def _render_export_section(
+    df_presence: pd.DataFrame,
+    builder: "ExhaustiviteBuilder",
+) -> None:
+    """
+    Section export Excel multi-feuilles.
+    Une feuille par équipe sélectionnée, matrice technicien × jour.
+    """
+    st.markdown("### 📥 Export Suivi de Présence")
+    st.caption(
+        "Génère un fichier Excel avec une feuille par équipe. "
+        "Chaque responsable d'équipe reçoit uniquement sa feuille."
+    )
+
+    col_e1, col_e2 = st.columns([2, 2])
+
+    with col_e1:
+        equipes_dispo = builder.get_equipes_list(df_presence)
+        equipes_export = st.multiselect(
+            "Équipes à inclure dans l'export",
+            options=equipes_dispo,
+            default=equipes_dispo,
+            key="export_equipes",
+        )
+
+    with col_e2:
+        mois_dispo = builder.get_mois_list(df_presence)
+        periode_options = ["Toute la période"] + mois_dispo
+
+        # Option trimestre
+        trimestres = _get_trimestres(df_presence)
+        periode_options = ["Toute la période"] + trimestres + mois_dispo
+
+        periode_export = st.selectbox(
+            "Période",
+            options=periode_options,
+            index=0,
+            key="export_periode",
+            help="Sélectionner un mois, un trimestre ou toute la période",
+        )
+
+    if not equipes_export:
+        st.warning("Sélectionnez au moins une équipe.")
+        return
+
+    # Aperçu du périmètre
+    df_prev = _filter_for_export(df_presence, equipes_export, periode_export)
+    nb_tech  = df_prev["salarie_nom"].nunique() if "salarie_nom" in df_prev.columns else 0
+    nb_jours = df_prev["date"].nunique() if "date" in df_prev.columns else 0
+
+    st.info(
+        f"**Périmètre export** : {len(equipes_export)} équipe(s) · "
+        f"{nb_tech} technicien(s) · {nb_jours} jour(s) · "
+        f"Période : {periode_export}"
+    )
+
+    # Génération du fichier
+    if st.button("⬇️ Générer et télécharger l'Excel", type="primary", key="export_btn"):
+        with st.spinner("Génération en cours…"):
+            try:
+                excel_bytes = _build_export_excel(df_presence, equipes_export, periode_export)
+                nom_fichier = _nom_fichier_export(equipes_export, periode_export)
+                st.download_button(
+                    label=f"📄 Télécharger {nom_fichier}",
+                    data=excel_bytes,
+                    file_name=nom_fichier,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="export_download",
+                )
+                st.success(f"✅ Fichier prêt — {len(equipes_export)} feuille(s) générée(s)")
+            except Exception as exc:
+                st.error(f"Erreur lors de la génération : {exc}")
+
+
+def _get_trimestres(df_presence: pd.DataFrame) -> list[str]:
+    """Retourne les trimestres disponibles dans la période."""
+    if "date" not in df_presence.columns:
+        return []
+    dates = pd.to_datetime(df_presence["date"], errors="coerce").dropna()
+    trimestres = set()
+    for d in dates:
+        q = (d.month - 1) // 3 + 1
+        trimestres.add(f"T{q} {d.year}")
+    return sorted(trimestres)
+
+
+def _filter_for_export(
+    df_presence: pd.DataFrame,
+    equipes: list[str],
+    periode: str,
+) -> pd.DataFrame:
+    """Filtre df_presence selon équipes et période."""
+    df = df_presence.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    # Filtre équipes
+    if equipes and "equipe_nom" in df.columns:
+        df = df[df["equipe_nom"].isin(equipes)]
+
+    # Filtre période
+    if periode != "Toute la période":
+        if periode.startswith("T"):
+            # Format "T1 2026"
+            parts = periode.split()
+            trimestre = int(parts[0][1])
+            annee     = int(parts[1])
+            mois_debut = (trimestre - 1) * 3 + 1
+            mois_fin   = trimestre * 3
+            df = df[
+                (df["date"].dt.year  == annee) &
+                (df["date"].dt.month >= mois_debut) &
+                (df["date"].dt.month <= mois_fin)
+            ]
+        else:
+            # Format "2026-01"
+            df["_mois"] = df["date"].dt.to_period("M").astype(str)
+            df = df[df["_mois"] == periode]
+            df = df.drop(columns=["_mois"], errors="ignore")
+
+    return df
+
+
+def _build_export_excel(
+    df_presence: pd.DataFrame,
+    equipes: list[str],
+    periode: str,
+) -> bytes:
+    """
+    Génère un Excel multi-feuilles.
+    Une feuille par équipe, matrice technicien × jour.
+    Cellules : heures pointées (0.0 si absent).
+    Colonnes résumé : Total heures, Jours présents, Taux présence.
+    """
+    from io import BytesIO
+    from openpyxl.styles import (
+        PatternFill, Font, Alignment, Border, Side
+    )
+    from openpyxl.utils import get_column_letter
+
+    df = _filter_for_export(df_presence, equipes, periode)
+    if df.empty:
+        raise ValueError("Aucune donnée pour cette sélection.")
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    # Tous les jours de la période (pour avoir les absents aussi)
+    date_min = df["date"].min()
+    date_max = df["date"].max()
+    tous_jours = pd.date_range(start=date_min, end=date_max, freq="D")
+
+    output = BytesIO()
+
+    # Couleurs
+    VERT    = "C6EFCE"   # présent
+    ROUGE   = "FFC7CE"   # absent (jour ouvré)
+    GRIS    = "D9D9D9"   # weekend
+    BLEU    = "DDEBF7"   # en-tête colonne date
+    NAVY    = "002060"   # en-tête technicien
+    JAUNE   = "FFF2CC"   # colonnes résumé
+    ORANGE  = "FCE4D6"   # excessif
+
+    thin = Side(style="thin", color="CCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for equipe in sorted(equipes):
+            df_eq = df[df["equipe_nom"] == equipe].copy() if "equipe_nom" in df.columns else df.copy()
+            if df_eq.empty:
+                continue
+
+            # Pivot binaire : 1 = présent, 0 = absent
+            # On utilise nunique sur or_id pour détecter la présence
+            # sans être affecté par les doublons de lignes
+            hr_col = "h_totale" if "h_totale" in df_eq.columns else "hr_totale"
+            if hr_col not in df_eq.columns:
+                df_eq[hr_col] = 0.0
+
+            pivot_presence = df_eq.pivot_table(
+                index="salarie_nom",
+                columns="date",
+                values=hr_col,
+                aggfunc=lambda x: 1 if (x > 0).any() else 0,
+            ).reindex(columns=tous_jours, fill_value=0).fillna(0)
+
+            pivot_presence.index.name = "Technicien"
+
+            # Colonnes résumé
+            date_cols = [c for c in pivot_presence.columns if isinstance(c, pd.Timestamp)]
+            nb_jours_ouvres = sum(1 for d in tous_jours if d.weekday() < 5)
+            pivot_presence["Jours présents"] = pivot_presence[date_cols].sum(axis=1)
+            pivot_presence["Jours ouvrés"]   = nb_jours_ouvres
+            pivot_presence["Taux présence"]  = (
+                pivot_presence["Jours présents"] / nb_jours_ouvres
+            ).round(3)
+
+            # Remplacer les 1 par "P" pour la lisibilité avant export
+            pivot_display = pivot_presence.copy()
+            pivot_display[date_cols] = pivot_display[date_cols].replace({1: "P", 0: ""})
+
+            sheet_name = equipe[:31]
+            pivot_display.to_excel(writer, sheet_name=sheet_name, startrow=2)
+
+            ws = writer.sheets[sheet_name]
+
+            # ── En-tête équipe ────────────────────────────────────────
+            ws["A1"] = f"Suivi Présence — {equipe} — {periode}"
+            ws["A1"].font = Font(bold=True, color="FFFFFF", size=12)
+            ws["A1"].fill = PatternFill("solid", fgColor=NAVY)
+            ws["A1"].alignment = Alignment(horizontal="left")
+
+            # ── Formatage colonnes dates ──────────────────────────────
+            nb_cols_date = len(tous_jours)
+            for col_idx, jour in enumerate(tous_jours, start=2):
+                col_letter = get_column_letter(col_idx)
+
+                # En-tête date — jours en français
+                _JOURS_FR = {0:"Lun", 1:"Mar", 2:"Mer", 3:"Jeu", 4:"Ven", 5:"Sam", 6:"Dim"}
+                cell_header = ws.cell(row=3, column=col_idx)
+                cell_header.value = f"{jour.strftime('%d/%m')}\n{_JOURS_FR[jour.weekday()]}"
+                cell_header.alignment = Alignment(
+                    wrap_text=True, horizontal="center", vertical="center"
+                )
+                cell_header.fill = PatternFill("solid", fgColor=BLEU)
+                cell_header.font = Font(bold=True, size=8)
+                cell_header.border = border
+                ws.column_dimensions[col_letter].width = 7
+
+                is_weekend = jour.weekday() >= 5
+
+                # Cellules données
+                for row_idx in range(4, 4 + len(pivot_presence.index)):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    val  = cell.value or 0
+
+                    if is_weekend:
+                        cell.fill   = PatternFill("solid", fgColor=GRIS)
+                        cell.value  = ""
+                    elif val == "" or val == 0:
+                        cell.fill   = PatternFill("solid", fgColor=ROUGE)
+                        cell.value  = ""
+                    else:
+                        # "P" = présent
+                        cell.fill  = PatternFill("solid", fgColor=VERT)
+                        cell.value = "P"
+                        cell.font  = Font(bold=True, size=9, color="276221")
+
+                    cell.alignment = Alignment(horizontal="center")
+                    cell.border    = border
+
+            # ── Colonnes résumé ───────────────────────────────────────
+            resume_cols = ["Jours présents", "Jours ouvrés", "Taux présence"]
+            for i, col_name in enumerate(resume_cols):
+                col_idx    = nb_cols_date + 2 + i
+                col_letter = get_column_letter(col_idx)
+
+                # En-tête
+                cell_h = ws.cell(row=3, column=col_idx)
+                cell_h.value     = col_name
+                cell_h.fill      = PatternFill("solid", fgColor="FFC000")
+                cell_h.font      = Font(bold=True, size=9)
+                cell_h.alignment = Alignment(horizontal="center", wrap_text=True)
+                cell_h.border    = border
+                ws.column_dimensions[col_letter].width = 12
+
+                # Données
+                for row_idx in range(4, 4 + len(pivot_presence.index)):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.fill      = PatternFill("solid", fgColor=JAUNE)
+                    cell.alignment = Alignment(horizontal="center")
+                    cell.border    = border
+                    if col_name == "Taux présence" and cell.value:
+                        cell.number_format = "0%"
+                        val = cell.value
+                        if isinstance(val, (int, float)):
+                            if val >= 0.9:
+                                cell.fill = PatternFill("solid", fgColor="C6EFCE")
+                                cell.font = Font(bold=True, color="276221", size=9)
+                            elif val >= 0.7:
+                                cell.fill = PatternFill("solid", fgColor="FFEB9C")
+                                cell.font = Font(bold=True, color="9C6500", size=9)
+                            else:
+                                cell.fill = PatternFill("solid", fgColor="FFC7CE")  # rouge
+                                cell.font = Font(bold=True, color="9C0006", size=9)
+
+            # ── Colonne technicien ────────────────────────────────────
+            ws.column_dimensions["A"].width = 28
+            for row_idx in range(4, 4 + len(pivot_presence.index)):
+                cell = ws.cell(row=row_idx, column=1)
+                cell.font      = Font(bold=True, size=9)
+                cell.fill      = PatternFill("solid", fgColor="EEF3FA")
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+                cell.border    = border
+
+            # En-tête colonne technicien
+            cell_tech = ws.cell(row=3, column=1)
+            cell_tech.value     = "Technicien"
+            cell_tech.font      = Font(bold=True, color="FFFFFF", size=10)
+            cell_tech.fill      = PatternFill("solid", fgColor=NAVY)
+            cell_tech.alignment = Alignment(horizontal="left")
+            cell_tech.border    = border
+
+            # Hauteur lignes
+            ws.row_dimensions[1].height = 22
+            ws.row_dimensions[3].height = 36
+            for row_idx in range(4, 4 + len(pivot_presence.index)):
+                ws.row_dimensions[row_idx].height = 18
+
+            # Freeze panes
+            ws.freeze_panes = "B4"
+
+    output.seek(0)
+    return output.read()
+
+
+def _nom_fichier_export(equipes: list[str], periode: str) -> str:
+    """Génère un nom de fichier propre."""
+    periode_clean = periode.replace(" ", "_").replace("/", "-")
+    if len(equipes) == 1:
+        equipe_clean = equipes[0][:20].replace(" ", "_")
+        return f"Presence_{equipe_clean}_{periode_clean}.xlsx"
+    return f"Presence_Toutes_Equipes_{periode_clean}.xlsx"
