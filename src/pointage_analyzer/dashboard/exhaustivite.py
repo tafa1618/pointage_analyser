@@ -126,13 +126,26 @@ def _render_heatmap_calendar(pivot_heures: pd.DataFrame, status_matrix: pd.DataF
         PresenceStatus.NON_CONCERNE: -3,
     }
 
-    z = [
-        [map_val.get(status_matrix.loc[t, d], -3) for d in pivot_heures.columns]
-        for t in techniciens
-    ]
+    z_colors, z_text, customdata = [], [], []
+    for tech in techniciens:
+        row_colors, row_text, row_custom = [], [], []
+        for col_date in pivot_heures.columns:
+            heures = pivot_heures.loc[tech, col_date]
+            statut = status_matrix.loc[tech, col_date]
+            row_colors.append(map_val.get(statut, -3))
+            row_text.append(f"{heures:.1f}h" if heures > 0 else "")
+            row_custom.append([heures, STATUS_LABELS.get(statut, statut)])
+        z_colors.append(row_colors)
+        z_text.append(row_text)
+        customdata.append(row_custom)
 
     fig = go.Figure(data=go.Heatmap(
-        z=z, x=dates, y=techniciens,
+        z=z_colors, x=dates, y=techniciens,
+        text=z_text,
+        texttemplate="%{text}",
+        textfont={"size": 9, "color": "black"},
+        customdata=customdata,
+        hovertemplate="<b>%{y}</b><br>%{x}<br>%{customdata[0]:.1f}h — %{customdata[1]}<extra></extra>",
         colorscale=[
             [0.0,   STATUS_COLORS[PresenceStatus.NON_CONCERNE]],
             [0.167, STATUS_COLORS[PresenceStatus.FERIE]],
@@ -144,8 +157,13 @@ def _render_heatmap_calendar(pivot_heures: pd.DataFrame, status_matrix: pd.DataF
         showscale=False, xgap=1, ygap=1,
     ))
     fig.update_layout(
-        height=max(400, 25 * len(techniciens) + 100),
-        margin=dict(l=200, r=20, t=40, b=40),
+        title="Calendrier de présence — heures pointées par technicien",
+        xaxis_title="Date", yaxis_title="Technicien",
+        height=max(400, 30 * len(techniciens) + 150),
+        margin=dict(l=200, r=20, t=60, b=60),
+        plot_bgcolor="white",
+        xaxis=dict(tickangle=-45, tickfont=dict(size=10)),
+        yaxis=dict(tickfont=dict(size=10)),
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -217,6 +235,9 @@ def _render_export_section(df_presence: pd.DataFrame, builder: ExhaustiviteBuild
 
     if st.button("⬇️ Générer l'Excel", type="primary", key="export_btn"):
         with st.spinner("Construction du fichier…"):
+            # DEBUG TEMPORAIRE — identifier les colonnes de df_presence
+            st.write("🔍 Colonnes df_presence:", df_presence.columns.tolist())
+            st.write(df_presence.head(3))
             try:
                 data = _build_excel_engine(df_presence, equipes, periode)
                 nom  = f"Presence_{periode.replace(' ', '_').replace('/', '-')}.xlsx"
