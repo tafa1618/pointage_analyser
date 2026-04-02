@@ -93,7 +93,7 @@ def render_exhaustivite_tab(df_presence: pd.DataFrame, config: ScoringConfig) ->
     if not daily_stats.empty:
         ouvrable = daily_stats[~daily_stats["est_weekend"]]
         if not ouvrable.empty:
-            taux_moy    = ouvrable["taux_presence"].mean()
+            taux_moy     = ouvrable["taux_presence"].mean()
             nb_abs_total = ouvrable["nb_absents"].sum()
             nb_exc_total = ouvrable["nb_excessifs"].sum()
 
@@ -132,7 +132,7 @@ def render_exhaustivite_tab(df_presence: pd.DataFrame, config: ScoringConfig) ->
 
 
 def _render_heatmap_calendar(pivot_heures: pd.DataFrame, status_matrix: pd.DataFrame) -> None:
-    dates      = [str(d.date()) if hasattr(d, "date") else str(d) for d in pivot_heures.columns]
+    dates       = [str(d.date()) if hasattr(d, "date") else str(d) for d in pivot_heures.columns]
     techniciens = list(pivot_heures.index)
 
     status_to_num = {
@@ -276,7 +276,7 @@ def _render_export_section(df_presence: pd.DataFrame, builder: "ExhaustiviteBuil
 def _get_trimestres(df_presence: pd.DataFrame) -> list[str]:
     if "date" not in df_presence.columns:
         return []
-    dates     = pd.to_datetime(df_presence["date"], errors="coerce").dropna()
+    dates      = pd.to_datetime(df_presence["date"], errors="coerce").dropna()
     trimestres = set()
     for d in dates:
         q = (d.month - 1) // 3 + 1
@@ -293,9 +293,9 @@ def _filter_for_export(df_presence: pd.DataFrame, equipes: list[str], periode: s
 
     if periode != "Toute la période":
         if periode.startswith("T"):
-            parts     = periode.split()
-            trimestre = int(parts[0][1])
-            annee     = int(parts[1])
+            parts      = periode.split()
+            trimestre  = int(parts[0][1])
+            annee      = int(parts[1])
             mois_debut = (trimestre - 1) * 3 + 1
             mois_fin   = trimestre * 3
             df = df[
@@ -311,6 +311,11 @@ def _filter_for_export(df_presence: pd.DataFrame, equipes: list[str], periode: s
 
 
 def _build_export_excel_v2(df_presence: pd.DataFrame, equipes: list[str], periode: str) -> bytes:
+    """
+    Génère un Excel multi-feuilles — une feuille par équipe.
+    FIX : utilise les valeurs du pivot directement (pas cell.value)
+    pour éviter les problèmes de lecture openpyxl après to_excel().
+    """
     from io import BytesIO
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -332,7 +337,6 @@ def _build_export_excel_v2(df_presence: pd.DataFrame, equipes: list[str], period
 
     thin   = Side(style="thin", color="CCCCCC")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
     _JOURS_FR = {0: "Lun", 1: "Mar", 2: "Mer", 3: "Jeu", 4: "Ven", 5: "Sam", 6: "Dim"}
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -345,139 +349,144 @@ def _build_export_excel_v2(df_presence: pd.DataFrame, equipes: list[str], period
             if hr_col not in df_eq.columns:
                 df_eq[hr_col] = 0.0
 
-            # ── Dates spécifiques à cette équipe ──────────────────────
-            df_eq["date"] = pd.to_datetime(df_eq["date"]).dt.normalize()
-            eq_date_min   = df_eq["date"].min()
-            eq_date_max   = df_eq["date"].max()
-            tous_jours     = pd.date_range(start=eq_date_min, end=eq_date_max, freq="D")
+            df_eq["date"]   = pd.to_datetime(df_eq["date"]).dt.normalize()
+            tous_jours      = pd.date_range(start=df_eq["date"].min(), end=df_eq["date"].max(), freq="D")
             tous_jours_norm = pd.DatetimeIndex([d.normalize() for d in tous_jours])
 
-            # ── Pivot binaire ─────────────────────────────────────────
+            # ── Pivot binaire (0/1) ───────────────────────────────────
             pivot = df_eq.pivot_table(
-                index="salarie_nom",
-                columns="date",
-                values=hr_col,
-                aggfunc="sum",
+                index="salarie_nom", columns="date", values=hr_col, aggfunc="sum",
             ).reindex(columns=tous_jours_norm, fill_value=0).fillna(0)
 
-            date_cols = [c for c in pivot.columns if isinstance(c, pd.Timestamp)]
-            pivot[date_cols] = (pivot[date_cols] > 0).astype(int)
-            pivot.index.name = "Technicien"
+            date_cols               = [c for c in pivot.columns if isinstance(c, pd.Timestamp)]
+            pivot_bin               = (pivot[date_cols] > 0).astype(int)  # 0/1
+            pivot_bin.index.name    = "Technicien"
 
-            # ── Colonnes résumé ───────────────────────────────────────
             nb_jours_ouvres         = sum(1 for d in tous_jours_norm if d.weekday() < 5)
-            pivot["Jours présents"] = pivot[date_cols].sum(axis=1)
-            pivot["Jours ouvrés"]   = nb_jours_ouvres
-            pivot["Taux présence"]  = (pivot["Jours présents"] / nb_jours_ouvres).round(3)
+            jours_presents          = pivot_bin.sum(axis=1)
 
-            # ── pivot_display : remplacer 1→P, 0→"" ──────────────────
-            pivot_display = pivot[date_cols].copy()
-            for col in date_cols:
-                pivot_display[col] = pivot_display[col].map({1: "P", 0: ""})
-            pivot_display["Jours présents"] = pivot["Jours présents"]
-            pivot_display["Jours ouvrés"]   = pivot["Jours ouvrés"]
-            pivot_display["Taux présence"]  = pivot["Taux présence"]
-            pivot_display.index             = pivot.index
-            pivot_display.index.name        = "Technicien"
-
+            # ── Écriture Excel sans contenu (structure vide) ──────────
+            # On écrit un DataFrame vide avec juste les index/colonnes
+            # pour créer la feuille, puis on remplit manuellement
+            df_empty = pd.DataFrame(
+                index=pivot_bin.index,
+                columns=[f"{j.strftime('%d/%m')}" for j in tous_jours] +
+                        ["Jours présents", "Jours ouvrés", "Taux présence"]
+            )
+            df_empty.index.name = "Technicien"
             sheet_name = equipe[:31]
-            pivot_display.to_excel(writer, sheet_name=sheet_name, startrow=2)
+            df_empty.to_excel(writer, sheet_name=sheet_name, startrow=2)
 
             ws = writer.sheets[sheet_name]
 
-            # En-tête titre
+            # ── Titre ─────────────────────────────────────────────────
             ws["A1"] = f"Suivi Présence — {equipe} — {periode}"
             ws["A1"].font      = Font(bold=True, color="FFFFFF", size=12)
             ws["A1"].fill      = PatternFill("solid", fgColor=NAVY)
             ws["A1"].alignment = Alignment(horizontal="left")
 
-            nb_cols_date = len(tous_jours)
+            nb_cols_date   = len(tous_jours)
+            techniciens    = list(pivot_bin.index)
+            nb_techniciens = len(techniciens)
 
-            # ── Formatage colonnes dates ──────────────────────────────
+            # ── En-têtes dates (ligne 3) ──────────────────────────────
             for col_idx, jour in enumerate(tous_jours, start=2):
-                col_letter = get_column_letter(col_idx)
-
-                cell_h        = ws.cell(row=3, column=col_idx)
-                cell_h.value  = f"{jour.strftime('%d/%m')}\n{_JOURS_FR[jour.weekday()]}"
-                cell_h.alignment = Alignment(wrap_text=True, horizontal="center", vertical="center")
-                cell_h.fill   = PatternFill("solid", fgColor=BLEU)
-                cell_h.font   = Font(bold=True, size=8)
-                cell_h.border = border
+                col_letter        = get_column_letter(col_idx)
+                cell_h            = ws.cell(row=3, column=col_idx)
+                cell_h.value      = f"{jour.strftime('%d/%m')}\n{_JOURS_FR[jour.weekday()]}"
+                cell_h.alignment  = Alignment(wrap_text=True, horizontal="center", vertical="center")
+                cell_h.fill       = PatternFill("solid", fgColor=BLEU)
+                cell_h.font       = Font(bold=True, size=8)
+                cell_h.border     = border
                 ws.column_dimensions[col_letter].width = 7
 
-                is_weekend = jour.weekday() >= 5
+            # ── Données (lignes 4+) en lisant pivot_bin directement ───
+            for t_idx, tech in enumerate(techniciens):
+                row_idx = 4 + t_idx
 
-                for row_idx in range(4, 4 + len(pivot.index)):
-                    cell = ws.cell(row=row_idx, column=col_idx)
-                    val  = cell.value
+                for col_idx, jour in enumerate(tous_jours_norm, start=2):
+                    cell       = ws.cell(row=row_idx, column=col_idx)
+                    is_weekend = jour.weekday() >= 5
 
                     if is_weekend:
                         cell.fill  = PatternFill("solid", fgColor=GRIS)
                         cell.value = ""
-                    elif not val or val == 0:
-                        cell.fill  = PatternFill("solid", fgColor=ROUGE)
-                        cell.value = ""
                     else:
-                        cell.fill  = PatternFill("solid", fgColor=VERT)
-                        cell.value = "P"
-                        cell.font  = Font(bold=True, size=9, color="276221")
+                        # ← lecture directe du pivot, pas de cell.value
+                        est_present = int(pivot_bin.loc[tech, jour]) == 1 if jour in pivot_bin.columns else False
+                        if est_present:
+                            cell.fill  = PatternFill("solid", fgColor=VERT)
+                            cell.value = "P"
+                            cell.font  = Font(bold=True, size=9, color="276221")
+                        else:
+                            cell.fill  = PatternFill("solid", fgColor=ROUGE)
+                            cell.value = ""
 
                     cell.alignment = Alignment(horizontal="center")
                     cell.border    = border
 
-            # ── Colonnes résumé ───────────────────────────────────────
-            resume_cols = ["Jours présents", "Jours ouvrés", "Taux présence"]
-            for i, col_name in enumerate(resume_cols):
-                col_idx    = nb_cols_date + 2 + i
-                col_letter = get_column_letter(col_idx)
+                # ── Colonnes résumé ───────────────────────────────────
+                jp   = int(jours_presents.loc[tech])
+                taux = round(jp / nb_jours_ouvres, 3) if nb_jours_ouvres > 0 else 0
 
-                cell_h            = ws.cell(row=3, column=col_idx)
-                cell_h.value      = col_name
-                cell_h.fill       = PatternFill("solid", fgColor="FFC000")
-                cell_h.font       = Font(bold=True, size=9)
-                cell_h.alignment  = Alignment(horizontal="center", wrap_text=True)
-                cell_h.border     = border
+                for i, (col_name, val) in enumerate([
+                    ("Jours présents", jp),
+                    ("Jours ouvrés",   nb_jours_ouvres),
+                    ("Taux présence",  taux),
+                ]):
+                    col_idx    = nb_cols_date + 2 + i
+                    col_letter = get_column_letter(col_idx)
+                    cell       = ws.cell(row=row_idx, column=col_idx)
+                    cell.value = val
+                    cell.alignment = Alignment(horizontal="center")
+                    cell.border    = border
+
+                    if col_name == "Taux présence":
+                        cell.number_format = "0%"
+                        if taux >= 0.9:
+                            cell.fill = PatternFill("solid", fgColor="C6EFCE")
+                            cell.font = Font(bold=True, color="276221", size=9)
+                        elif taux >= 0.7:
+                            cell.fill = PatternFill("solid", fgColor="FFEB9C")
+                            cell.font = Font(bold=True, color="9C6500", size=9)
+                        else:
+                            cell.fill = PatternFill("solid", fgColor="FFC7CE")
+                            cell.font = Font(bold=True, color="9C0006", size=9)
+                    else:
+                        cell.fill = PatternFill("solid", fgColor=JAUNE)
+
+            # ── En-têtes colonnes résumé (ligne 3) ────────────────────
+            for i, col_name in enumerate(["Jours présents", "Jours ouvrés", "Taux présence"]):
+                col_idx       = nb_cols_date + 2 + i
+                col_letter    = get_column_letter(col_idx)
+                cell_h        = ws.cell(row=3, column=col_idx)
+                cell_h.value  = col_name
+                cell_h.fill   = PatternFill("solid", fgColor="FFC000")
+                cell_h.font   = Font(bold=True, size=9)
+                cell_h.alignment = Alignment(horizontal="center", wrap_text=True)
+                cell_h.border = border
                 ws.column_dimensions[col_letter].width = 12
 
-                for row_idx in range(4, 4 + len(pivot.index)):
-                    cell           = ws.cell(row=row_idx, column=col_idx)
-                    cell.fill      = PatternFill("solid", fgColor=JAUNE)
-                    cell.alignment = Alignment(horizontal="center")
-                    cell.border    = border
-                    if col_name == "Taux présence" and cell.value is not None:
-                        cell.number_format = "0%"
-                        val = cell.value
-                        if isinstance(val, (int, float)):
-                            if val >= 0.9:
-                                cell.fill = PatternFill("solid", fgColor="C6EFCE")
-                                cell.font = Font(bold=True, color="276221", size=9)
-                            elif val >= 0.7:
-                                cell.fill = PatternFill("solid", fgColor="FFEB9C")
-                                cell.font = Font(bold=True, color="9C6500", size=9)
-                            else:
-                                cell.fill = PatternFill("solid", fgColor="FFC7CE")
-                                cell.font = Font(bold=True, color="9C0006", size=9)
-
             # ── Colonne technicien ────────────────────────────────────
-            ws.column_dimensions["A"].width = 28
-            for row_idx in range(4, 4 + len(pivot.index)):
-                cell           = ws.cell(row=row_idx, column=1)
+            ws.column_dimensions["A"].width  = 28
+            ws.cell(row=3, column=1).value   = "Technicien"
+            ws.cell(row=3, column=1).font    = Font(bold=True, color="FFFFFF", size=10)
+            ws.cell(row=3, column=1).fill    = PatternFill("solid", fgColor=NAVY)
+            ws.cell(row=3, column=1).alignment = Alignment(horizontal="left")
+            ws.cell(row=3, column=1).border  = border
+
+            for t_idx in range(nb_techniciens):
+                cell           = ws.cell(row=4 + t_idx, column=1)
                 cell.font      = Font(bold=True, size=9)
                 cell.fill      = PatternFill("solid", fgColor="EEF3FA")
                 cell.alignment = Alignment(horizontal="left", vertical="center")
                 cell.border    = border
 
-            cell_tech            = ws.cell(row=3, column=1)
-            cell_tech.value      = "Technicien"
-            cell_tech.font       = Font(bold=True, color="FFFFFF", size=10)
-            cell_tech.fill       = PatternFill("solid", fgColor=NAVY)
-            cell_tech.alignment  = Alignment(horizontal="left")
-            cell_tech.border     = border
-
+            # ── Hauteurs lignes ───────────────────────────────────────
             ws.row_dimensions[1].height = 22
             ws.row_dimensions[3].height = 36
-            for row_idx in range(4, 4 + len(pivot.index)):
-                ws.row_dimensions[row_idx].height = 18
+            for t_idx in range(nb_techniciens):
+                ws.row_dimensions[4 + t_idx].height = 18
 
             ws.freeze_panes = "B4"
 
