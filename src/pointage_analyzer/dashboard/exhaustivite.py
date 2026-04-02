@@ -235,9 +235,6 @@ def _render_export_section(df_presence: pd.DataFrame, builder: ExhaustiviteBuild
 
     if st.button("⬇️ Générer l'Excel", type="primary", key="export_btn"):
         with st.spinner("Construction du fichier…"):
-            # DEBUG TEMPORAIRE — identifier les colonnes de df_presence
-            st.write("🔍 Colonnes df_presence:", df_presence.columns.tolist())
-            st.write(df_presence.head(3))
             try:
                 data = _build_excel_engine(df_presence, equipes, periode)
                 nom  = f"Presence_{periode.replace(' ', '_').replace('/', '-')}.xlsx"
@@ -288,7 +285,14 @@ def _build_excel_engine(df_presence: pd.DataFrame, equipes: list[str], periode: 
             tous_jours    = pd.date_range(df_eq["date"].min(), df_eq["date"].max(), freq="D")
 
             # Pivot heures (valeurs numériques brutes)
-            hr_col = "h_totale" if "h_totale" in df_eq.columns else "hr_totale"
+            hr_col = next(
+                    (c for c in ["h_totale", "heures_totales", "hr_totale", "heure_realisee"]
+                    if c in df_eq.columns),
+                    None
+            )
+            if hr_col is None:
+                df_eq["_h"] = 1.0  # fallback binaire : présence détectée = 1
+                hr_col = "_h"
             if hr_col not in df_eq.columns:
                 df_eq[hr_col] = 0.0
 
