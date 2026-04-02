@@ -269,7 +269,7 @@ with tab_equipes:
 #     else:
 #         st.info("Données technicien indisponibles.")
 with tab_tech:
-    render_techniciens_tab(result.pt_harm, result.pt_harm)
+    render_techniciens_tab(result.pt_harm, result.bo_harm)
 
 # --- TAB 5 : Exhaustivité ---
 with tab_exh:
