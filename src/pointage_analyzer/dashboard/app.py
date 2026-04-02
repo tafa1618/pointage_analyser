@@ -34,7 +34,7 @@ from pointage_analyzer.dashboard.visualizations import (
 from pointage_analyzer.dashboard.exhaustivite import render_exhaustivite_tab
 from pointage_analyzer.dashboard.efficience import render_efficience_tab
 from pointage_analyzer.dashboard.productivite import render_productivite_tab
-from pointage_analyzer.dashboard.techniciens import render_techniciens_tab
+#from pointage_analyzer.dashboard.techniciens import render_techniciens_tab
 
 
 
