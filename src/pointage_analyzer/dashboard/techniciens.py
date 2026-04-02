@@ -1,433 +1,392 @@
 """
-Onglet Exhaustivité — Calendrier de présence technicien × jour.
-Optimisé pour l'export Excel multi-équipes.
+Onglet Techniciens — Performance composite productivité + efficience.
+
+Deux dimensions complémentaires :
+  - Productivité : Facturable / (Facturable + Non Facturable) — tous OR
+  - Efficience   : médiane(clip(temps_ref / h_realisees, 0, 2)) par OR
+                   Temps ref = Temps vendu en priorité, sinon Temps prévu devis
+                   Périmètre : OR mono-technicien avec temps_ref > 0 uniquement
+                   Médiane robuste aux OR avec devis aberrants
+
+Score composite = 0.5 × Productivité + 0.5 × Efficience
+Si efficience non calculable → score = productivité seule
+
+Badges :
+  🏆 Champion      : score ≥ 0.70
+  ✅ Bon           : score ≥ 0.50
+  📈 À encourager  : score ≥ 0.30
+  🔴 À accompagner : score < 0.30
 """
 
 from __future__ import annotations
-import streamlit as st
-import pandas as pd
+
 import numpy as np
-import plotly.graph_objects as go
-from io import BytesIO
+import pandas as pd
+import streamlit as st
 
-from pointage_analyzer.pipeline.exhaustivite_builder import (
-    ExhaustiviteBuilder,
-    ExhaustiviteError,
-    PresenceStatus,
-)
-from pointage_analyzer.core.config import ScoringConfig
+_SEUIL_CHAMPION    = 0.70
+_SEUIL_BON         = 0.50
+_SEUIL_ENCOURAGER  = 0.30
 
-# Palette couleurs sémantiques (RGB Plotly)
-STATUS_COLORS = {
-    PresenceStatus.PRESENT:      "#2ECC71",
-    PresenceStatus.ABSENT:       "#E74C3C",
-    PresenceStatus.EXCESSIF:     "#E67E22",
-    PresenceStatus.WEEKEND:      "#BDC3C7",
-    PresenceStatus.FERIE:        "#85C1E9",
-    PresenceStatus.NON_CONCERNE: "#FFFFFF",
-}
-
-STATUS_LABELS = {
-    PresenceStatus.PRESENT:   "Présent (≤ 8h)",
-    PresenceStatus.ABSENT:    "Absent (0h)",
-    PresenceStatus.EXCESSIF:  "Excessif (> 8h)",
-    PresenceStatus.WEEKEND:   "Week-end",
-    PresenceStatus.FERIE:     "Jour férié",
-}
-
-_JOURS_FR = {0: "Lun", 1: "Mar", 2: "Mer", 3: "Jeu", 4: "Ven", 5: "Sam", 6: "Dim"}
+_COULEUR_CHAMPION    = "#002060"
+_COULEUR_BON         = "#28a745"
+_COULEUR_ENCOURAGER  = "#fd7e14"
+_COULEUR_ACCOMPAGNER = "#dc3545"
 
 
-def render_exhaustivite_tab(df_presence: pd.DataFrame, config: ScoringConfig) -> None:
-    st.header("📅 Contrôle d'Exhaustivité — Calendrier de Présence")
+def _badge(score: float) -> str:
+    if score >= _SEUIL_CHAMPION:      return "🏆 Champion"
+    elif score >= _SEUIL_BON:         return "✅ Bon"
+    elif score >= _SEUIL_ENCOURAGER:  return "📈 À encourager"
+    else:                              return "🔴 À accompagner"
 
-    if df_presence.empty:
-        st.error("Données de présence indisponibles. Vérifier le fichier Pointage.")
-        return
 
-    builder = ExhaustiviteBuilder(config=config)
+def _couleur_badge(badge: str) -> str:
+    return {
+        "🏆 Champion":      _COULEUR_CHAMPION,
+        "✅ Bon":           _COULEUR_BON,
+        "📈 À encourager":  _COULEUR_ENCOURAGER,
+        "🔴 À accompagner": _COULEUR_ACCOMPAGNER,
+    }.get(badge, "#888888")
 
-    # ── Filtres ───────────────────────────────────────────────────────
-    col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
 
-    with col_f1:
-        equipes_dispo = builder.get_equipes_list(df_presence)
-        equipe_filter = st.multiselect(
-            "🏢 Équipe(s)",
-            options=equipes_dispo,
-            default=equipes_dispo[:1] if equipes_dispo else [],
+def _couleur_score(val: float) -> str:
+    if val >= _SEUIL_CHAMPION:     return f"background-color:{_COULEUR_CHAMPION};color:white"
+    elif val >= _SEUIL_BON:        return f"background-color:{_COULEUR_BON};color:white"
+    elif val >= _SEUIL_ENCOURAGER: return f"background-color:{_COULEUR_ENCOURAGER};color:white"
+    else:                           return f"background-color:{_COULEUR_ACCOMPAGNER};color:white"
+
+
+def compute_tech_scores(
+    pointage_df: pd.DataFrame,
+    bo_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Calcule les scores productivité + efficience par technicien."""
+    pt = _normalize_pointage(pointage_df)
+    if pt.empty:
+        return pd.DataFrame()
+
+    pt_valid = pt[pt["_or_id"].notna() & (pt["_or_id"] != "0")].copy()
+
+    # ── Productivité (tous OR) ────────────────────────────────────────
+    tech_prod = (
+        pt_valid.groupby(["_technom", "_equipe"])
+        .agg(
+            h_fact=("_facturable", "sum"),
+            h_nonfact=("_nonfacturable", "sum"),
+            h_totale=("_hr_totale", "sum"),
+            nb_or_tot=("_or_id", "nunique"),
+            nb_jours=("_date", "nunique"),
         )
+        .reset_index()
+    )
+    tech_prod["productivite"] = (
+        tech_prod["h_fact"] /
+        (tech_prod["h_fact"] + tech_prod["h_nonfact"]).replace(0, np.nan)
+    ).fillna(0)
 
-    with col_f2:
-        mois_dispo = builder.get_mois_list(df_presence)
-        mois_sel = st.selectbox(
-            "📆 Mois",
-            options=["Tous"] + mois_dispo,
-            index=len(mois_dispo) if mois_dispo else 0,
-        )
+    # ── Efficience (OR mono-tech) ─────────────────────────────────────
+    tech_eff = _compute_efficience(pt_valid, bo_df)
 
-    with col_f3:
-        vue_mode = st.radio("Vue", options=["Individuelle", "Équipe"], horizontal=True)
+    # ── Fusion ───────────────────────────────────────────────────────
+    final = tech_prod.merge(tech_eff, on="_technom", how="left")
+    final["has_efficience"] = final["efficience"].notna()
+    final["score"] = np.where(
+        final["has_efficience"],
+        0.5 * final["productivite"] + 0.5 * final["efficience"],
+        final["productivite"],
+    )
+    final["badge"] = final["score"].apply(_badge)
 
-    # ── Filtrage ──────────────────────────────────────────────────────
-    df_filtered = builder.get_filtered_matrix(
-        df_presence,
-        equipe_filter=equipe_filter if equipe_filter else None,
-        mois_label=mois_sel if mois_sel != "Tous" else None,
+    return (
+        final.rename(columns={"_technom": "technicien", "_equipe": "equipe"})
+        .sort_values("score", ascending=False)
+        .reset_index(drop=True)
     )
 
-    if df_filtered.empty:
-        st.warning("Aucune donnée pour cette sélection.")
+
+def _normalize_pointage(pt: pd.DataFrame) -> pd.DataFrame:
+    out = pt.copy()
+
+    def _pick(harm, raw):
+        if harm in out.columns: return out[harm]
+        if raw  in out.columns: return out[raw]
+        return pd.Series(np.nan, index=out.index)
+
+    out["_or_id"]         = _pick("or_id", "OR (Numéro)").astype(str).str.strip()
+    out["_technom"]       = _pick("salarie_nom", "Salarié - Nom").fillna("Inconnu")
+    out["_equipe"]        = _pick("equipe_nom",  "Salarié - Equipe(Nom)").fillna("Inconnu")
+    out["_facturable"]    = pd.to_numeric(_pick("facturable",     "Facturable"),     errors="coerce").fillna(0)
+    out["_nonfacturable"] = pd.to_numeric(_pick("non_facturable", "Non Facturable"), errors="coerce").fillna(0)
+    out["_hr_totale"]     = pd.to_numeric(_pick("hr_totale",      "Hr_Totale"),      errors="coerce").fillna(0)
+    out["_date"]          = pd.to_datetime(_pick("date_saisie", "Saisie heures - Date"), errors="coerce")
+    out["_or_id"]         = out["_or_id"].where(~out["_or_id"].isin(["0", "nan", ""]), np.nan)
+    return out
+
+
+def _compute_efficience(
+    pt_valid: pd.DataFrame,
+    bo_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """
+    Efficience par technicien — médiane des ratios OR.
+
+    ratio par OR = clip(temps_ref / h_realisees, 0, 2)
+    efficience   = médiane des ratios (robuste aux OR à devis aberrant)
+    """
+    empty = pd.DataFrame(columns=["_technom", "efficience", "nb_or_eff",
+                                   "pct_depassement", "nb_or_depasse"])
+    if bo_df is None or bo_df.empty:
+        return empty
+
+    bo = bo_df.copy()
+
+    def _pick_bo(harm, raw):
+        if harm in bo.columns: return bo[harm]
+        if raw  in bo.columns: return bo[raw]
+        return pd.Series(0, index=bo.index)
+
+    or_id_col = "or_id" if "or_id" in bo.columns else "N° OR (Segment)"
+    bo["_or_id"] = bo[or_id_col].astype(str).str.strip()
+
+    tv = pd.to_numeric(_pick_bo("temps_vendu",       "Temps vendu (OR)"),       errors="coerce").fillna(0)
+    tp = pd.to_numeric(_pick_bo("temps_prevu_devis", "Temps prévu devis (OR)"), errors="coerce").fillna(0)
+    bo["_temps_ref"] = tv.where(tv > 0, tp)
+
+    bo_or = (
+        bo.groupby("_or_id")
+        .agg(temps_ref=("_temps_ref", "sum"))
+        .reset_index()
+        .rename(columns={"_or_id": "_or_id_bo"})
+    )
+
+    # OR mono-technicien
+    nb_tech_par_or = pt_valid.groupby("_or_id")["_technom"].nunique()
+    or_mono        = nb_tech_par_or[nb_tech_par_or == 1].index
+    pt_mono        = pt_valid[pt_valid["_or_id"].isin(or_mono)].copy()
+    if pt_mono.empty:
+        return empty
+
+    pt_mono_or = (
+        pt_mono.groupby(["_technom", "_or_id"])
+        .agg(h_realisees=("_hr_totale", "sum"))
+        .reset_index()
+    )
+    pt_mono_or = pt_mono_or.merge(
+        bo_or.rename(columns={"_or_id_bo": "_or_id"}),
+        on="_or_id", how="left"
+    )
+    pt_mono_or = pt_mono_or[
+        (pt_mono_or["temps_ref"] > 0) & (pt_mono_or["h_realisees"] > 0)
+    ]
+    if pt_mono_or.empty:
+        return empty
+
+    pt_mono_or["en_depassement"] = pt_mono_or["h_realisees"] > pt_mono_or["temps_ref"]
+
+    # Ratio écrêté à [0, 2] — neutralise les OR avec devis très élevé
+    pt_mono_or["ratio"] = (
+        pt_mono_or["temps_ref"] / pt_mono_or["h_realisees"].replace(0, np.nan)
+    ).clip(0, 2).fillna(0)
+
+    # Médiane par technicien
+    tech_eff = (
+        pt_mono_or.groupby("_technom")
+        .agg(
+            nb_or_eff=("_or_id", "nunique"),
+            efficience=("ratio", "median"),
+            nb_or_depasse=("en_depassement", "sum"),
+        )
+        .reset_index()
+    )
+    tech_eff["efficience"]      = tech_eff["efficience"].clip(0, 1)
+    tech_eff["pct_depassement"] = tech_eff["nb_or_depasse"] / tech_eff["nb_or_eff"]
+
+    return tech_eff[["_technom", "efficience", "nb_or_eff",
+                      "pct_depassement", "nb_or_depasse"]]
+
+
+def render_techniciens_tab(
+    pointage_df: pd.DataFrame,
+    bo_df: pd.DataFrame | None = None,
+) -> None:
+    st.markdown("## 👷 Performance par Technicien")
+
+    with st.spinner("Calcul des scores en cours…"):
+        df = compute_tech_scores(pointage_df, bo_df)
+
+    if df.empty:
+        st.info("Aucune donnée disponible.")
         return
 
-    # ── Métriques journalières ────────────────────────────────────────
-    _render_metrics(df_filtered, builder)
+    nb_total    = len(df)
+    nb_avec_eff = int(df["has_efficience"].sum())
+    nb_sans_eff = nb_total - nb_avec_eff
 
-    st.markdown("---")
-
-    # ── Affichage Calendrier ──────────────────────────────────────────
-    if mois_sel == "Tous":
-        st.info("💡 Sélectionnez un mois spécifique pour le calendrier détaillé.")
-        _render_monthly_summary_chart(df_filtered, builder.compute_daily_stats(df_filtered))
-    else:
-        try:
-            use_nom = vue_mode == "Individuelle"
-            pivot_heures, status_matrix = builder.build_pivot_calendar(df_filtered, use_nom=use_nom)
-            _render_heatmap_calendar(pivot_heures, status_matrix)
-        except Exception as exc:
-            st.error(f"Erreur d'affichage : {exc}")
-
-    st.markdown("---")
-    _render_export_section(df_presence, builder)
-
-
-def _render_metrics(df_filtered: pd.DataFrame, builder: ExhaustiviteBuilder) -> None:
-    daily_stats = builder.compute_daily_stats(df_filtered)
-    if not daily_stats.empty:
-        ouvrable = daily_stats[~daily_stats["est_weekend"]]
-        if not ouvrable.empty:
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Taux de présence", f"{ouvrable['taux_presence'].mean():.1%}")
-            m2.metric("Absences total", int(ouvrable["nb_absents"].sum()))
-            m3.metric("Jours > 8h", int(ouvrable["nb_excessifs"].sum()))
-            m4.metric("Effectif", df_filtered["salarie_nom"].nunique())
-
-
-def _render_heatmap_calendar(pivot_heures: pd.DataFrame, status_matrix: pd.DataFrame) -> None:
-    dates       = [str(d.date()) if hasattr(d, "date") else str(d) for d in pivot_heures.columns]
-    techniciens = list(pivot_heures.index)
-
-    map_val = {
-        PresenceStatus.PRESENT:      1,
-        PresenceStatus.ABSENT:       0,
-        PresenceStatus.EXCESSIF:     2,
-        PresenceStatus.WEEKEND:      -1,
-        PresenceStatus.FERIE:        -2,
-        PresenceStatus.NON_CONCERNE: -3,
-    }
-
-    z_colors, z_text, customdata = [], [], []
-    for tech in techniciens:
-        row_colors, row_text, row_custom = [], [], []
-        for col_date in pivot_heures.columns:
-            heures = pivot_heures.loc[tech, col_date]
-            statut = status_matrix.loc[tech, col_date]
-            row_colors.append(map_val.get(statut, -3))
-            row_text.append(f"{heures:.1f}h" if heures > 0 else "")
-            row_custom.append([heures, STATUS_LABELS.get(statut, statut)])
-        z_colors.append(row_colors)
-        z_text.append(row_text)
-        customdata.append(row_custom)
-
-    fig = go.Figure(data=go.Heatmap(
-        z=z_colors, x=dates, y=techniciens,
-        text=z_text,
-        texttemplate="%{text}",
-        textfont={"size": 9, "color": "black"},
-        customdata=customdata,
-        hovertemplate="<b>%{y}</b><br>%{x}<br>%{customdata[0]:.1f}h — %{customdata[1]}<extra></extra>",
-        colorscale=[
-            [0.0,   STATUS_COLORS[PresenceStatus.NON_CONCERNE]],
-            [0.167, STATUS_COLORS[PresenceStatus.FERIE]],
-            [0.333, STATUS_COLORS[PresenceStatus.WEEKEND]],
-            [0.5,   STATUS_COLORS[PresenceStatus.ABSENT]],
-            [0.667, STATUS_COLORS[PresenceStatus.PRESENT]],
-            [1.0,   STATUS_COLORS[PresenceStatus.EXCESSIF]],
-        ],
-        showscale=False, xgap=1, ygap=1,
-    ))
-    fig.update_layout(
-        title="Calendrier de présence — heures pointées par technicien",
-        xaxis_title="Date", yaxis_title="Technicien",
-        height=max(400, 30 * len(techniciens) + 150),
-        margin=dict(l=200, r=20, t=60, b=60),
-        plot_bgcolor="white",
-        xaxis=dict(tickangle=-45, tickfont=dict(size=10)),
-        yaxis=dict(tickfont=dict(size=10)),
+    st.caption(
+        f"**{nb_total}** techniciens analysés | "
+        f"Score composite (Prod. + Eff.) : **{nb_avec_eff}** techniciens | "
+        f"Score productivité seule : **{nb_sans_eff}** (OR multi-techniciens ou sans devis)"
     )
-    st.plotly_chart(fig, use_container_width=True)
 
-    # Légende
-    col_leg = st.columns(len(STATUS_LABELS))
-    for i, (status, label) in enumerate(STATUS_LABELS.items()):
-        with col_leg[i]:
-            color = STATUS_COLORS[status]
+    _render_badge_kpis(df)
+    st.divider()
+    _render_scatter(df)
+    st.divider()
+    _render_ranking_table(df)
+    st.divider()
+    _render_methodologie(nb_avec_eff, nb_total)
+
+
+def _render_badge_kpis(df: pd.DataFrame) -> None:
+    badges = ["🏆 Champion", "✅ Bon", "📈 À encourager", "🔴 À accompagner"]
+    counts = {b: (df["badge"] == b).sum() for b in badges}
+    c1, c2, c3, c4 = st.columns(4)
+    for col, badge_label in zip([c1, c2, c3, c4], badges):
+        couleur = _couleur_badge(badge_label)
+        with col:
             st.markdown(
-                f'<div style="background:{color};border-radius:4px;padding:4px 8px;'
-                f'text-align:center;font-size:12px;color:{"white" if status == PresenceStatus.ABSENT else "black"}">'
-                f'{label}</div>',
+                f"""<div style="background:{couleur};border-radius:8px;padding:16px;text-align:center">
+                  <div style="color:white;font-size:24px;font-weight:bold">{counts[badge_label]}</div>
+                  <div style="color:white;font-size:13px;margin-top:4px">{badge_label}</div>
+                </div>""",
                 unsafe_allow_html=True,
             )
 
 
-def _render_monthly_summary_chart(df_filtered: pd.DataFrame, daily_stats: pd.DataFrame) -> None:
-    if daily_stats.empty:
-        return
-    import plotly.express as px
-    fig = px.bar(
-        daily_stats[~daily_stats["est_weekend"]],
-        x="date", y="taux_presence",
-        color="taux_presence",
-        color_continuous_scale=["#E74C3C", "#F39C12", "#2ECC71"],
-        title="Taux de présence journalier (jours ouvrables)",
-        labels={"taux_presence": "Taux présence", "date": "Date"},
-    )
-    fig.update_layout(yaxis_tickformat=".0%", height=350, showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# EXPORT EXCEL
-# ══════════════════════════════════════════════════════════════════════
-
-def _render_export_section(df_presence: pd.DataFrame, builder: ExhaustiviteBuilder) -> None:
-    st.subheader("📥 Export Suivi de Présence")
-    st.caption("Une feuille par équipe — P = présent, vide = absent.")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        equipes = st.multiselect(
-            "Équipes à exporter",
-            options=builder.get_equipes_list(df_presence),
-            default=builder.get_equipes_list(df_presence),
-            key="exp_eq",
-        )
-    with col2:
-        periodes = (
-            ["Toute la période"]
-            + _get_trimestres(df_presence)
-            + builder.get_mois_list(df_presence)
-        )
-        periode = st.selectbox("Période", periodes, key="exp_per")
-
-    if not equipes:
-        st.warning("Sélectionnez au moins une équipe.")
-        return
-
-    # Aperçu périmètre
-    df_prev  = _filter_for_export(df_presence, equipes, periode)
-    nb_tech  = df_prev["salarie_nom"].nunique() if "salarie_nom" in df_prev.columns else 0
-    nb_jours = df_prev["date"].nunique() if "date" in df_prev.columns else 0
-    st.info(
-        f"**Périmètre** : {len(equipes)} équipe(s) · "
-        f"{nb_tech} technicien(s) · {nb_jours} jour(s) · {periode}"
+def _render_scatter(df: pd.DataFrame) -> None:
+    st.markdown("### 🎯 Carte de performance : Productivité vs Efficience")
+    st.caption(
+        "Chaque point = 1 technicien. "
+        "Axe X = Productivité (dépend du business). "
+        "Axe Y = Efficience (dépend du technicien). "
+        "Points gris = techniciens sans efficience calculable."
     )
 
-    if st.button("⬇️ Générer l'Excel", type="primary", key="export_btn"):
-        with st.spinner("Construction du fichier…"):
-            # DEBUG TEMPORAIRE — identifier les colonnes de df_presence
-            st.write("🔍 Colonnes df_presence:", df_presence.columns.tolist())
-            st.write(df_presence.head(3))
-            try:
-                data = _build_excel_engine(df_presence, equipes, periode)
-                nom  = f"Presence_{periode.replace(' ', '_').replace('/', '-')}.xlsx"
-                st.download_button(
-                    label="📄 Télécharger",
-                    data=data,
-                    file_name=nom,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="export_dl",
-                )
-                st.success(f"✅ {len(equipes)} feuille(s) générée(s)")
-            except Exception as exc:
-                st.error(f"Erreur : {exc}")
+    df_eff  = df[df["has_efficience"]].copy()
+    df_neff = df[~df["has_efficience"]].copy()
+
+    def _pts(sub, has_eff=True):
+        return [{
+            "x": round(float(r["productivite"]) * 100, 1),
+            "y": round(float(r.get("efficience", r["productivite"])) * 100, 1),
+            "label": str(r["technicien"]), "equipe": str(r["equipe"]),
+            "badge": str(r["badge"]) if has_eff else "—",
+            "score": round(float(r["score"]) * 100, 1),
+            "color": _couleur_badge(str(r["badge"])) if has_eff else "#cccccc",
+        } for _, r in sub.iterrows()]
+
+    pts_eff  = _pts(df_eff,  True)
+    pts_neff = _pts(df_neff, False)
+
+    html = """
+    <div style="position:relative;height:420px"><canvas id="cs"></canvas></div>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script>
+    const pE=PTS_EFF, pN=PTS_NEFF, all=[...pE,...pN];
+    new Chart(document.getElementById('cs'),{
+      type:'scatter',
+      data:{datasets:[
+        {label:'Avec efficience',data:pE.map(function(p){return{x:p.x,y:p.y};}),
+          backgroundColor:pE.map(function(p){return p.color+'CC';}),
+          borderColor:pE.map(function(p){return p.color;}),
+          borderWidth:2,pointRadius:8,pointHoverRadius:11},
+        {label:'Sans efficience',data:pN.map(function(p){return{x:p.x,y:p.y};}),
+          backgroundColor:'rgba(180,180,180,0.4)',borderColor:'#aaa',
+          borderWidth:1,pointRadius:6,pointStyle:'triangle'}
+      ]},
+      options:{responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{position:'top'},tooltip:{callbacks:{label:function(c){
+          const i=c.dataIndex+(c.datasetIndex===1?pE.length:0);const p=all[i];
+          return[p.label,'Equipe: '+p.equipe,'Prod: '+p.x+'%',
+            'Eff: '+(c.datasetIndex===0?p.y+'%':'N/A'),'Score: '+p.score+'%',p.badge];
+        }}}},
+        scales:{
+          x:{title:{display:true,text:'Productivite (%)'},min:0,max:105,ticks:{callback:function(v){return v+'%';}}},
+          y:{title:{display:true,text:'Efficience (%)'},min:0,max:105,ticks:{callback:function(v){return v+'%';}}}
+        }
+      }
+    });
+    </script>
+    <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:#666">
+      <span>&#x2197; <b>Haut droite</b>: Champions</span>
+      <span>&#x2198; <b>Bas droite</b>: Productif mais depasse les devis</span>
+      <span>&#x2196; <b>Haut gauche</b>: Efficient, peu de facturable</span>
+      <span>&#x2199; <b>Bas gauche</b>: A accompagner</span>
+    </div>"""
+
+    import json
+    html = html.replace("PTS_EFF",  json.dumps(pts_eff))
+    html = html.replace("PTS_NEFF", json.dumps(pts_neff))
+    st.components.v1.html(html, height=480)
 
 
-def _build_excel_engine(df_presence: pd.DataFrame, equipes: list[str], periode: str) -> bytes:
-    """
-    Moteur de génération Excel.
-    Lit les valeurs directement depuis le pivot Python — pas de cell.value.
-    """
-    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
+def _render_ranking_table(df: pd.DataFrame) -> None:
+    st.markdown("### 📋 Ranking Techniciens")
 
-    df = _filter_for_export(df_presence, equipes, periode)
-    if df.empty:
-        raise ValueError("Aucune donnée pour cette sélection.")
+    col_f1, col_f2, col_f3 = st.columns([2, 2, 2])
+    with col_f1:
+        search = st.text_input("🔍 Rechercher", key="tech_search")
+    with col_f2:
+        equipes = ["Toutes"] + sorted(df["equipe"].unique().tolist())
+        eq_sel  = st.selectbox("Équipe", equipes, key="tech_equipe")
+    with col_f3:
+        badge_sel = st.selectbox("Badge",
+            ["Tous","🏆 Champion","✅ Bon","📈 À encourager","🔴 À accompagner"],
+            key="tech_badge")
 
-    output = BytesIO()
+    dff = df.copy()
+    if search:   dff = dff[dff["technicien"].str.contains(search, case=False, na=False)]
+    if eq_sel != "Toutes": dff = dff[dff["equipe"] == eq_sel]
+    if badge_sel != "Tous": dff = dff[dff["badge"] == badge_sel]
 
-    NAVY  = "002060"
-    BLEU  = "DDEBF7"
-    VERT  = "C6EFCE"
-    ROUGE = "FFC7CE"
-    GRIS  = "D9D9D9"
-    JAUNE = "FFF2CC"
+    dff["Rang"] = range(1, len(dff) + 1)
+    dff["Efficience_fmt"] = dff["efficience"].apply(lambda v: f"{v:.0%}" if pd.notna(v) else "—")
+    dff["Dépassements"]   = dff.apply(
+        lambda r: f"{int(r['nb_or_depasse'])}/{int(r['nb_or_eff'])}" if r["has_efficience"] else "—", axis=1)
 
-    thin   = Side(style="thin", color="CCCCCC")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    display = dff[[
+        "Rang","technicien","equipe","productivite","Efficience_fmt",
+        "score","badge","nb_or_tot","Dépassements","nb_jours"
+    ]].rename(columns={
+        "technicien":"Technicien","equipe":"Équipe","productivite":"Productivité",
+        "Efficience_fmt":"Efficience","score":"Score composite","badge":"Badge",
+        "nb_or_tot":"OR total","nb_jours":"Jours",
+    })
 
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for equipe in sorted(equipes):
-            df_eq = df[df["equipe_nom"] == equipe].copy()
-            if df_eq.empty:
-                continue
+    styled = (
+        display.style
+        .format({"Productivité":"{:.0%}","Score composite":"{:.0%}"})
+        .applymap(lambda v: f"background-color:{_couleur_badge(v)};color:white;font-weight:bold", subset=["Badge"])
+        .applymap(_couleur_score, subset=["Score composite"])
+    )
+    st.dataframe(styled, use_container_width=True, height=450)
+    st.caption(f"{len(display)} technicien(s) affiché(s)")
 
-            # Dates spécifiques à cette équipe
-            df_eq["date"] = pd.to_datetime(df_eq["date"]).dt.normalize()
-            tous_jours    = pd.date_range(df_eq["date"].min(), df_eq["date"].max(), freq="D")
-
-            # Pivot heures (valeurs numériques brutes)
-            hr_col = "h_totale" if "h_totale" in df_eq.columns else "hr_totale"
-            if hr_col not in df_eq.columns:
-                df_eq[hr_col] = 0.0
-
-            pivot = df_eq.pivot_table(
-                index="salarie_nom", columns="date", values=hr_col, aggfunc="sum"
-            ).reindex(columns=tous_jours, fill_value=0).fillna(0)
-
-            techniciens     = list(pivot.index)
-            nb_jours_ouvres = sum(1 for d in tous_jours if d.weekday() < 5)
-
-            # Créer la feuille
-            ws = writer.book.create_sheet(title=equipe[:31])
-
-            # ── Titre ─────────────────────────────────────────────────
-            ws["A1"] = f"SUIVI PRÉSENCE — {equipe} ({periode})"
-            ws["A1"].font      = Font(bold=True, color="FFFFFF", size=12)
-            ws["A1"].fill      = PatternFill("solid", fgColor=NAVY)
-            ws["A1"].alignment = Alignment(horizontal="left")
-
-            # ── En-tête colonne technicien ────────────────────────────
-            ws.cell(row=3, column=1).value     = "Technicien"
-            ws.cell(row=3, column=1).font      = Font(bold=True, color="FFFFFF", size=10)
-            ws.cell(row=3, column=1).fill      = PatternFill("solid", fgColor=NAVY)
-            ws.cell(row=3, column=1).alignment = Alignment(horizontal="left")
-            ws.cell(row=3, column=1).border    = border
-            ws.column_dimensions["A"].width    = 30
-
-            # ── En-têtes colonnes dates ───────────────────────────────
-            for c_idx, jour in enumerate(tous_jours, start=2):
-                cell             = ws.cell(row=3, column=c_idx)
-                cell.value       = f"{jour.strftime('%d/%m')}\n{_JOURS_FR[jour.weekday()]}"
-                cell.fill        = PatternFill("solid", fgColor=BLEU)
-                cell.font        = Font(bold=True, size=8)
-                cell.alignment   = Alignment(wrap_text=True, horizontal="center", vertical="center")
-                cell.border      = border
-                ws.column_dimensions[get_column_letter(c_idx)].width = 7
-
-            # ── En-têtes colonnes résumé ──────────────────────────────
-            res_start = len(tous_jours) + 2
-            for i, label in enumerate(["Jours présents", "Jours ouvrés", "Taux présence"]):
-                col_idx  = res_start + i
-                cell     = ws.cell(row=3, column=col_idx)
-                cell.value     = label
-                cell.fill      = PatternFill("solid", fgColor="FFC000")
-                cell.font      = Font(bold=True, size=9)
-                cell.alignment = Alignment(horizontal="center", wrap_text=True)
-                cell.border    = border
-                ws.column_dimensions[get_column_letter(col_idx)].width = 12
-
-            # ── Données ───────────────────────────────────────────────
-            for r_idx, tech in enumerate(techniciens, start=4):
-
-                # Nom technicien
-                cell_tech            = ws.cell(row=r_idx, column=1)
-                cell_tech.value      = tech
-                cell_tech.font       = Font(bold=True, size=9)
-                cell_tech.fill       = PatternFill("solid", fgColor="EEF3FA")
-                cell_tech.alignment  = Alignment(horizontal="left", vertical="center")
-                cell_tech.border     = border
-                ws.row_dimensions[r_idx].height = 18
-
-                presents = 0
-
-                for c_idx, jour in enumerate(tous_jours, start=2):
-                    cell       = ws.cell(row=r_idx, column=c_idx)
-                    cell.alignment = Alignment(horizontal="center")
-                    cell.border    = border
-
-                    # ← lecture directe du pivot, jamais de cell.value
-                    val        = pivot.loc[tech, jour]
-                    is_weekend = jour.weekday() >= 5
-
-                    if is_weekend:
-                        cell.fill  = PatternFill("solid", fgColor=GRIS)
-                    elif val > 0:
-                        cell.value = "P"
-                        cell.fill  = PatternFill("solid", fgColor=VERT)
-                        cell.font  = Font(bold=True, size=9, color="276221")
-                        presents  += 1
-                    else:
-                        cell.fill  = PatternFill("solid", fgColor=ROUGE)
-
-                # ── Résumé ────────────────────────────────────────────
-                taux = round(presents / nb_jours_ouvres, 2) if nb_jours_ouvres > 0 else 0
-
-                for i, (val, label) in enumerate([
-                    (presents,        "Jours présents"),
-                    (nb_jours_ouvres, "Jours ouvrés"),
-                    (taux,            "Taux présence"),
-                ]):
-                    col_idx        = res_start + i
-                    cell           = ws.cell(row=r_idx, column=col_idx)
-                    cell.value     = val
-                    cell.alignment = Alignment(horizontal="center")
-                    cell.border    = border
-
-                    if label == "Taux présence":
-                        cell.number_format = "0%"
-                        if taux >= 0.9:
-                            cell.fill = PatternFill("solid", fgColor="C6EFCE")
-                            cell.font = Font(bold=True, color="276221", size=9)
-                        elif taux >= 0.7:
-                            cell.fill = PatternFill("solid", fgColor="FFEB9C")
-                            cell.font = Font(bold=True, color="9C6500", size=9)
-                        else:
-                            cell.fill = PatternFill("solid", fgColor="FFC7CE")
-                            cell.font = Font(bold=True, color="9C0006", size=9)
-                    else:
-                        cell.fill = PatternFill("solid", fgColor=JAUNE)
-
-            ws.row_dimensions[3].height = 36
-            ws.freeze_panes = "B4"
-
-    return output.getvalue()
+    csv = display.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("⬇️ Exporter CSV", csv, "ranking_techniciens.csv", "text/csv", key="tech_export")
 
 
-def _get_trimestres(df: pd.DataFrame) -> list[str]:
-    if "date" not in df.columns:
-        return []
-    dates = pd.to_datetime(df["date"], errors="coerce").dropna()
-    return sorted(set(f"T{(d.month - 1) // 3 + 1} {d.year}" for d in dates))
+def _render_methodologie(nb_avec_eff: int, nb_total: int) -> None:
+    with st.expander("📖 Méthodologie — comment lire ce ranking ?", expanded=False):
+        st.markdown(f"""
+**Score composite = 50% Productivité + 50% Efficience**
 
+**Productivité** *(tous les {nb_total} techniciens)*
+> Heures Facturables / (Heures Facturables + Heures Non Facturables)
+> Dépend du business, pas uniquement du technicien.
 
-def _filter_for_export(df_presence: pd.DataFrame, equipes: list[str], periode: str) -> pd.DataFrame:
-    df = df_presence.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+**Efficience** *({nb_avec_eff} techniciens — OR mono-technicien uniquement)*
+> Médiane de [ clip(Temps référence / Heures réalisées, 0, 200%) ] par OR
+> Temps référence = Temps vendu en priorité, sinon Temps prévu devis.
 
-    if equipes and "equipe_nom" in df.columns:
-        df = df[df["equipe_nom"].isin(equipes)]
+**Pourquoi la médiane ?** Certains OR ont un devis très élevé mais peu d'heures pointées
+(ex: 197h de devis, 0.08h réalisées → ratio = 2462%). La médiane ignore ces valeurs aberrantes.
 
-    if periode != "Toute la période":
-        if periode.startswith("T"):
-            q = int(periode[1])
-            y = int(periode.split()[1])
-            df = df[
-                (df["date"].dt.year == y) &
-                (((df["date"].dt.month - 1) // 3 + 1) == q)
-            ]
-        else:
-            df = df[df["date"].dt.to_period("M").astype(str) == periode]
-
-    return df
+| Badge | Score |
+|---|---|
+| 🏆 Champion | ≥ 70% |
+| ✅ Bon | ≥ 50% |
+| 📈 À encourager | ≥ 30% |
+| 🔴 À accompagner | < 30% |
+        """)
