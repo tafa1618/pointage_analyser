@@ -285,6 +285,6 @@ with tab_eff:
 # --- TAB 7 : Productivité ---
 with tab_prod:
     if result.productivite:
-        render_productivite_tab(result.productivite)
+        render_productivite_tab(result.productivite, result.pt_harm)
     else:
         st.info("Charger le fichier Pointage pour activer l'analyse de productivité.")
