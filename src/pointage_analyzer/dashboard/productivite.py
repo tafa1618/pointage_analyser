@@ -1,808 +1,385 @@
 """
-Onglet Productivité — dashboard Streamlit.
+Onglet Productivité — analyse des heures facturables vs totales.
 
-Consomme un ProductiviteResult produit par ProductiviteBuilder.
-Aucun calcul métier ici — uniquement affichage.
-
-Formule affichée : Facturable / (Facturable + Non Facturable)
-Les heures Allouées sont exclues du dénominateur.
-
-Structure de l'onglet :
-  1. KPI cards globales YTD
-  2. Évolution mensuelle (courbe)
-  3. Classement par équipe (barres horizontales)
-  4. Matrice technicien × mois (heatmap)
-  5. Tableau détaillé techniciens (filtrable)
+Filtre année intégré :
+  - Toutes les visualisations changent en fonction de l'année sélectionnée
+  - YTD = Jan → dernier mois disponible de l'année choisie
+  - Évolution mensuelle = mois de l'année choisie uniquement
 """
 
 from __future__ import annotations
 
 import pandas as pd
+import numpy as np
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 
-try:
-    from pointage_analyzer.pipeline.productivite_builder import (
-        ProductiviteResult,
-        SEUIL_EXCELLENT,
-        SEUIL_BON,
-        SEUIL_FAIBLE,
-    )
-except ImportError:
-    from productivite_builder import (  # type: ignore[no-redef]
-        ProductiviteResult,
-        SEUIL_EXCELLENT,
-        SEUIL_BON,
-        SEUIL_FAIBLE,
-    )
+from pointage_analyzer.pipeline.productivite_builder import (
+    ProductiviteBuilder,
+    ProductiviteResult,
+    SEUIL_EXCELLENT,
+    SEUIL_BON,
+    SEUIL_FAIBLE,
+)
 
-# ─── Couleurs ────────────────────────────────────────────────────────────────
-_COULEUR_EXCELLENT = "#28a745"
-_COULEUR_BON       = "#fd7e14"
-_COULEUR_FAIBLE    = "#dc3545"
-_COULEUR_CRITIQUE  = "#6c757d"
-_COULEUR_PRIMAIRE  = "#002060"
-_COULEUR_ACCENT    = "#FFCD11"
+_COULEUR_EXCELLENT = "#22c55e"
+_COULEUR_BON       = "#FFCD11"
+_COULEUR_FAIBLE    = "#f97316"
+_COULEUR_CRITIQUE  = "#ef4444"
 
 
-def _pct(val: float) -> str:
-    return f"{val:.1%}"
+def _couleur_prod(ratio: float) -> str:
+    if ratio >= SEUIL_EXCELLENT: return _COULEUR_EXCELLENT
+    elif ratio >= SEUIL_BON:     return _COULEUR_BON
+    elif ratio >= SEUIL_FAIBLE:  return _COULEUR_FAIBLE
+    else:                         return _COULEUR_CRITIQUE
 
 
-def _couleur_perf(ratio: float) -> str:
-    if ratio >= SEUIL_EXCELLENT:
-        return _COULEUR_EXCELLENT
-    elif ratio >= SEUIL_BON:
-        return _COULEUR_BON
-    elif ratio >= SEUIL_FAIBLE:
-        return _COULEUR_FAIBLE
-    return _COULEUR_CRITIQUE
+def _filter_by_year(pt_harm: pd.DataFrame, year: int) -> pd.DataFrame:
+    """Filtre le DataFrame pointage sur l'année sélectionnée."""
+    date_col = "date_saisie" if "date_saisie" in pt_harm.columns else "Saisie heures - Date"
+    dates = pd.to_datetime(pt_harm[date_col], errors="coerce")
+    return pt_harm[dates.dt.year == year].copy()
 
 
-def render_productivite_tab(result: ProductiviteResult) -> None:
-    """Point d'entrée appelé depuis app.py."""
-    if result is None or (result.ytd_facturable + result.ytd_non_facturable) == 0:
-        st.info("Aucune donnée de productivité disponible. Lancez l'analyse d'abord.")
+def render_productivite_tab(productivite: ProductiviteResult, pt_harm: pd.DataFrame) -> None:
+    """
+    Point d'entrée depuis app.py.
+
+    Args:
+        productivite: résultat pré-calculé (année complète — non filtré)
+        pt_harm:      DataFrame Pointage harmonisé brut (pour recalcul par année)
+    """
+    st.markdown("## 📊 Analyse de la Productivité")
+
+    # ── Sélecteur année ───────────────────────────────────────────────
+    date_col = "date_saisie" if "date_saisie" in pt_harm.columns else "Saisie heures - Date"
+    dates_all = pd.to_datetime(pt_harm[date_col], errors="coerce")
+    annees_dispo = sorted(dates_all.dt.year.dropna().unique().astype(int).tolist(), reverse=True)
+
+    if not annees_dispo:
+        st.error("Aucune date valide dans les données.")
         return
 
-    st.markdown("## ⚡ Productivité Techniciens")
-    st.caption(
-        f"Période : **{result.periode_debut}** → **{result.periode_fin}** | "
-        f"{result.nb_techniciens} techniciens | {result.nb_equipes} équipes"
-    )
+    col_ann, col_spacer = st.columns([1, 3])
+    with col_ann:
+        annee_sel = st.selectbox(
+            "📅 Année",
+            options=annees_dispo,
+            index=0,
+            key="prod_annee",
+        )
 
-    _render_kpi_cards(result)
+    # Recalcul sur l'année sélectionnée
+    pt_filtered = _filter_by_year(pt_harm, annee_sel)
+    if pt_filtered.empty:
+        st.warning(f"Aucune donnée pour {annee_sel}.")
+        return
+
+    builder = ProductiviteBuilder()
+    result  = builder.build(pt_filtered)
+
+    if result.ytd_facturable == 0 and result.ytd_non_facturable == 0:
+        st.warning("Données insuffisantes pour calculer la productivité.")
+        return
+
+    # ── KPI Cards ─────────────────────────────────────────────────────
+    _render_kpi_cards(result, annee_sel)
     st.divider()
+
+    # ── Évolution mensuelle ───────────────────────────────────────────
     _render_evolution_mensuelle(result)
     st.divider()
 
-    col_eq, col_eq_mois = st.columns([1, 1])
-    with col_eq:
-        _render_barres_equipes(result)
-    with col_eq_mois:
-        _render_equipe_mois(result)
+    # ── Barres équipes ────────────────────────────────────────────────
+    _render_barres_equipes(result)
+    st.divider()
 
+    # ── Heatmap technicien × mois ─────────────────────────────────────
+    _render_heatmap_tech_mois(result)
     st.divider()
-    _render_matrice_heatmap(result)
-    st.divider()
+
+    # ── Tableau techniciens ───────────────────────────────────────────
     _render_tableau_techniciens(result)
     st.divider()
-    _render_simulateur_global(result)
-    st.divider()
-    _render_analyse_proxy(result)
+
+    # ── Analyse équipe proxy ──────────────────────────────────────────
+    _render_analyse_equipe(result)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Composants internes
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+# SECTIONS
+# ══════════════════════════════════════════════════════════════════════
 
-def _render_kpi_cards(result: ProductiviteResult) -> None:
-    """4 métriques globales YTD."""
-    prod    = result.ytd_productivite
-    couleur = _couleur_perf(prod)
+def _render_kpi_cards(result: ProductiviteResult, annee: int) -> None:
+    couleur = _couleur_prod(result.ytd_productivite)
+    m1, m2, m3, m4, m5 = st.columns(5)
 
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        st.metric(
-            label="🎯 Productivité YTD",
-            value=_pct(prod),
-            help="Σ Facturable / (Σ Facturable + Σ Non Facturable) — heures Allouées exclues",
-        )
-        st.markdown(
-            f"""
-            <div style="background:#e9ecef;border-radius:4px;height:8px;margin-top:-12px">
-              <div style="background:{couleur};width:{min(prod,1)*100:.0f}%;
-                          height:8px;border-radius:4px"></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with c2:
-        st.metric(
-            label="⏱ Heures Facturables",
-            value=f"{result.ytd_facturable:,.0f}h",
-        )
-
-    with c3:
-        st.metric(
-            label="📉 Heures Non Fact.",
-            value=f"{result.ytd_non_facturable:,.0f}h",
-            help="Heures non facturables uniquement (Allouées exclues)",
-        )
-
-    with c4:
-        st.metric(
-            label="📋 Heures Allouées",
-            value=f"{result.ytd_allouee:,.0f}h",
-            help="Formations, déplacements, réunions — exclues du calcul de productivité",
-        )
+    m1.markdown(
+        f"""<div style="background:#1a1a2e;border-left:4px solid {couleur};
+        border-radius:4px;padding:12px 16px">
+        <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px">
+        Productivité YTD {annee}</div>
+        <div style="font-size:32px;font-weight:700;color:{couleur}">
+        {result.ytd_productivite:.1%}</div>
+        <div style="font-size:10px;color:#555">{result.periode_debut} → {result.periode_fin}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    m2.metric("Heures facturables",   f"{result.ytd_facturable:,.0f}h")
+    m3.metric("Heures non facturables", f"{result.ytd_non_facturable:,.0f}h")
+    m4.metric("Techniciens",          f"{result.nb_techniciens}")
+    m5.metric("Équipes",              f"{result.nb_equipes}")
 
 
 def _render_evolution_mensuelle(result: ProductiviteResult) -> None:
-    """Courbe d'évolution mensuelle."""
-    st.markdown("### 📈 Évolution mensuelle")
+    st.markdown("### 📈 Évolution mensuelle — Productivité YTD")
 
-    df = result.par_mois
+    df = result.par_mois.copy()
     if df.empty:
-        st.info("Pas de données mensuelles.")
+        st.info("Aucune donnée mensuelle.")
         return
 
-    mois_labels  = df["mois"].tolist()
-    prod_values  = [round(v * 100, 1) for v in df["productivite"].tolist()]
-    fact_values  = [round(v, 1) for v in df["facturable"].tolist()]
-    nonfact_values = [round(v, 1) for v in df["non_facturable"].tolist()]
+    # YTD cumulatif (Jan→M)
+    df = df.sort_values("mois").reset_index(drop=True)
+    df["fact_cum"]    = df["facturable"].cumsum()
+    df["nonfact_cum"] = df["non_facturable"].cumsum()
+    df["prod_ytd"]    = df["fact_cum"] / (df["fact_cum"] + df["nonfact_cum"]).replace(0, np.nan)
+    df["prod_ytd"]    = df["prod_ytd"].fillna(0)
 
-    html = f"""
-    <div style="position:relative;height:320px">
-      <canvas id="chartMois"></canvas>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script>
-    const ctx = document.getElementById('chartMois').getContext('2d');
-    new Chart(ctx, {{
-      data: {{
-        labels: {mois_labels},
-        datasets: [
-          {{
-            type: 'bar',
-            label: 'Heures Facturables',
-            data: {fact_values},
-            backgroundColor: 'rgba(255, 205, 17, 0.7)',
-            yAxisID: 'yH',
-            order: 2,
-          }},
-          {{
-            type: 'bar',
-            label: 'Heures Non Facturables',
-            data: {nonfact_values},
-            backgroundColor: 'rgba(0, 32, 96, 0.2)',
-            yAxisID: 'yH',
-            order: 3,
-          }},
-          {{
-            type: 'line',
-            label: 'Productivité (%)',
-            data: {prod_values},
-            borderColor: '#dc3545',
-            backgroundColor: 'rgba(220,53,69,0.1)',
-            borderWidth: 3,
-            pointRadius: 6,
-            pointBackgroundColor: '#dc3545',
-            tension: 0.3,
-            yAxisID: 'yP',
-            order: 1,
-          }}
-        ]
-      }},
-      options: {{
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {{
-          legend: {{ position: 'top' }},
-          tooltip: {{
-            callbacks: {{
-              label: function(ctx) {{
-                if (ctx.dataset.label === 'Productivité (%)') return ctx.dataset.label + ': ' + ctx.raw + '%';
-                return ctx.dataset.label + ': ' + ctx.raw + 'h';
-              }}
-            }}
-          }}
-        }},
-        scales: {{
-          yH: {{ type: 'linear', position: 'left',  title: {{ display: true, text: 'Heures' }} }},
-          yP: {{ type: 'linear', position: 'right', title: {{ display: true, text: 'Productivité (%)' }},
-                 min: 0, max: 100,
-                 grid: {{ drawOnChartArea: false }} }}
-        }}
-      }}
-    }});
-    </script>
-    """
-    st.components.v1.html(html, height=340)
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Productivité YTD cumulée**")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df["mois"], y=df["prod_ytd"] * 100,
+            mode="lines+markers+text",
+            text=[f"{v:.1%}" for v in df["prod_ytd"]],
+            textposition="top center",
+            textfont=dict(size=10),
+            line=dict(color="#FFCD11", width=2),
+            marker=dict(size=8),
+            name="YTD",
+        ))
+        for seuil, label, color in [
+            (SEUIL_EXCELLENT * 100, "Excellent", _COULEUR_EXCELLENT),
+            (SEUIL_BON       * 100, "Bon",       _COULEUR_BON),
+        ]:
+            fig.add_hline(y=seuil, line_dash="dot", line_color=color,
+                          annotation_text=label, annotation_position="right")
+        fig.update_layout(
+            height=320, yaxis_ticksuffix="%", yaxis_range=[0, 100],
+            plot_bgcolor="#0d0d0f", paper_bgcolor="#0d0d0f",
+            font_color="#d8dce0", margin=dict(t=20, b=20),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.markdown("**Répartition mensuelle des heures**")
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(x=df["mois"], y=df["facturable"],
+                              name="Facturable", marker_color="#22c55e"))
+        fig2.add_trace(go.Bar(x=df["mois"], y=df["non_facturable"],
+                              name="Non Facturable", marker_color="#ef4444"))
+        fig2.update_layout(
+            barmode="stack", height=320,
+            plot_bgcolor="#0d0d0f", paper_bgcolor="#0d0d0f",
+            font_color="#d8dce0", margin=dict(t=20, b=20),
+            legend=dict(orientation="h", y=-0.2),
+        )
+        st.plotly_chart(fig2, use_container_width=True)
 
 
 def _render_barres_equipes(result: ProductiviteResult) -> None:
-    """Barres horizontales productivité par équipe YTD."""
-    st.markdown("### 🏭 Par équipe (YTD)")
+    st.markdown("### 🏢 Productivité par Équipe")
 
-    df = result.par_equipe.sort_values("productivite", ascending=True)
+    df = result.par_equipe.copy()
     if df.empty:
-        st.info("Pas de données équipes.")
+        st.info("Aucune donnée équipe.")
         return
 
-    equipes   = df["equipe"].tolist()
-    prod_vals = [round(v * 100, 1) for v in df["productivite"].tolist()]
-    colors    = [_couleur_perf(v / 100) for v in prod_vals]
+    df = df.sort_values("productivite", ascending=True)
+    colors = [_couleur_prod(v) for v in df["productivite"]]
 
-    html = f"""
-    <div style="position:relative;height:{max(250, len(equipes)*40)}px">
-      <canvas id="chartEquipes"></canvas>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script>
-    new Chart(document.getElementById('chartEquipes'), {{
-      type: 'bar',
-      data: {{
-        labels: {equipes},
-        datasets: [{{
-          label: 'Productivité (%)',
-          data: {prod_vals},
-          backgroundColor: {colors},
-          borderRadius: 4,
-        }}]
-      }},
-      options: {{
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {{
-          legend: {{ display: false }},
-          tooltip: {{
-            callbacks: {{
-              label: ctx => ctx.raw + '%'
-            }}
-          }}
-        }},
-        scales: {{
-          x: {{ min: 0, max: 100, ticks: {{ callback: v => v + '%' }} }}
-        }}
-      }}
-    }});
-    </script>
-    """
-    st.components.v1.html(html, height=max(270, len(equipes) * 42))
+    fig = go.Figure(go.Bar(
+        x=df["productivite"] * 100,
+        y=df["equipe"],
+        orientation="h",
+        marker_color=colors,
+        text=[f"{v:.1%}" for v in df["productivite"]],
+        textposition="outside",
+        customdata=df[["nb_techniciens", "facturable", "non_facturable"]].values,
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Productivité: %{x:.1f}%<br>"
+            "Techniciens: %{customdata[0]}<br>"
+            "Fact: %{customdata[1]:,.0f}h | Non-fact: %{customdata[2]:,.0f}h"
+            "<extra></extra>"
+        ),
+    ))
+    fig.add_vline(x=SEUIL_EXCELLENT * 100, line_dash="dot",
+                  line_color=_COULEUR_EXCELLENT, annotation_text="60%")
+    fig.add_vline(x=SEUIL_BON * 100, line_dash="dot",
+                  line_color=_COULEUR_BON, annotation_text="40%")
+    fig.update_layout(
+        height=max(300, 35 * len(df)),
+        xaxis=dict(ticksuffix="%", range=[0, 110]),
+        plot_bgcolor="#0d0d0f", paper_bgcolor="#0d0d0f",
+        font_color="#d8dce0", margin=dict(t=20, b=20, l=200),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
-def _render_equipe_mois(result: ProductiviteResult) -> None:
-    """Tableau équipe × mois avec couleurs."""
-    st.markdown("### 📅 Équipe × Mois")
+def _render_heatmap_tech_mois(result: ProductiviteResult) -> None:
+    st.markdown("### 🗓️ Heatmap Productivité — Technicien × Mois")
 
-    df = result.par_equipe_mois
+    df = result.par_tech_mois.copy()
     if df.empty:
-        st.info("Pas de données.")
+        st.info("Aucune donnée.")
         return
+
+    # Filtre équipe optionnel
+    equipes = sorted(df["equipe"].unique().tolist())
+    eq_sel  = st.selectbox("Équipe", ["Toutes"] + equipes, key="prod_hm_eq")
+    if eq_sel != "Toutes":
+        df = df[df["equipe"] == eq_sel]
 
     pivot = df.pivot_table(
-        index="equipe", columns="mois", values="productivite", aggfunc="first"
+        index="technicien", columns="mois",
+        values="productivite", aggfunc="mean"
     ).fillna(0)
 
-    def _style_cell(v):
-        c   = _couleur_perf(v)
-        txt = "white" if v >= SEUIL_EXCELLENT or v < SEUIL_FAIBLE else "black"
-        return f"background-color:{c};color:{txt};text-align:center"
-
-    styled = pivot.style.format("{:.0%}").applymap(_style_cell)
-    st.dataframe(styled, use_container_width=True)
-
-
-def _render_matrice_heatmap(result: ProductiviteResult) -> None:
-    """Matrice heatmap technicien × mois avec filtre équipe."""
-    st.markdown("### 🔥 Matrice Technicien × Mois")
-
-    df = result.par_tech_mois
-    if df.empty:
-        st.info("Pas de données.")
-        return
-
-    equipes_dispo = sorted(df["equipe"].unique().tolist())
-    equipe_sel = st.selectbox(
-        "Filtrer par équipe",
-        options=["Toutes les équipes"] + equipes_dispo,
-        key="prod_equipe_filter",
+    fig = px.imshow(
+        pivot * 100,
+        color_continuous_scale=["#ef4444", "#f97316", "#FFCD11", "#22c55e"],
+        zmin=0, zmax=100,
+        aspect="auto",
+        labels=dict(color="Productivité (%)"),
     )
-
-    if equipe_sel != "Toutes les équipes":
-        df = df[df["equipe"] == equipe_sel]
-
-    if df.empty:
-        st.info("Aucun technicien pour cette équipe.")
-        return
-
-    pivot = df.pivot_table(
-        index="technicien", columns="mois", values="productivite", aggfunc="first"
-    ).fillna(0)
-
-    pivot["_moy"] = pivot.mean(axis=1)
-    pivot = pivot.sort_values("_moy", ascending=False).drop(columns="_moy")
-
-    def _style_heatmap(v):
-        c   = _couleur_perf(v)
-        txt = "white" if v >= SEUIL_EXCELLENT or v < SEUIL_FAIBLE else "black"
-        return f"background-color:{c};color:{txt};text-align:center;font-weight:bold"
-
-    styled = pivot.style.format("{:.0%}").applymap(_style_heatmap)
-    st.dataframe(styled, use_container_width=True, height=min(600, (len(pivot) + 1) * 36))
-
-    st.markdown(
-        f"""
-        <div style="display:flex;gap:16px;margin-top:4px;font-size:12px">
-          <span style="color:{_COULEUR_EXCELLENT}">■ Excellent ≥ {SEUIL_EXCELLENT:.0%}</span>
-          <span style="color:{_COULEUR_BON}">■ Bon ≥ {SEUIL_BON:.0%}</span>
-          <span style="color:{_COULEUR_FAIBLE}">■ Faible ≥ {SEUIL_FAIBLE:.0%}</span>
-          <span style="color:{_COULEUR_CRITIQUE}">■ Critique &lt; {SEUIL_FAIBLE:.0%}</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    fig.update_traces(
+        text=[[f"{v:.0f}%" if v > 0 else "" for v in row] for row in pivot.values * 100],
+        texttemplate="%{text}",
     )
+    fig.update_layout(
+        height=max(350, 25 * len(pivot)),
+        plot_bgcolor="#0d0d0f", paper_bgcolor="#0d0d0f",
+        font_color="#d8dce0", margin=dict(t=20, b=40),
+        coloraxis_colorbar=dict(ticksuffix="%"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_tableau_techniciens(result: ProductiviteResult) -> None:
-    """Tableau détaillé techniciens avec recherche et tri."""
-    st.markdown("### 👷 Détail Techniciens")
+    st.markdown("### 👷 Tableau Techniciens")
 
     df = result.par_technicien.copy()
     if df.empty:
-        st.info("Pas de données techniciens.")
+        st.info("Aucune donnée.")
         return
 
-    # Dénominateur réel = Facturable + Non Facturable (sans Allouées)
-    df["base_calcul"] = df["facturable"] + df["non_facturable"]
+    col1, col2 = st.columns([2, 2])
+    with col1:
+        search = st.text_input("🔍 Rechercher", key="prod_tech_search")
+    with col2:
+        equipes = ["Toutes"] + sorted(df["equipe"].unique().tolist())
+        eq_sel  = st.selectbox("Équipe", equipes, key="prod_tech_eq")
 
-    # Filtres
-    col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
-    with col_f1:
-        search = st.text_input("🔍 Rechercher un technicien", key="prod_search_tech")
-    with col_f2:
-        equipes_dispo = ["Toutes"] + sorted(df["equipe"].unique().tolist())
-        eq_filter = st.selectbox("Équipe", equipes_dispo, key="prod_table_equipe")
-    with col_f3:
-        perf_filter = st.selectbox(
-            "Performance",
-            ["Tous", "Excellent", "Bon", "Faible", "Critique"],
-            key="prod_perf_filter",
-        )
+    if search: df = df[df["technicien"].str.contains(search, case=False, na=False)]
+    if eq_sel != "Toutes": df = df[df["equipe"] == eq_sel]
 
-    if search:
-        df = df[df["technicien"].str.contains(search, case=False, na=False)]
-    if eq_filter != "Toutes":
-        df = df[df["equipe"] == eq_filter]
-    if perf_filter != "Tous":
-        df = df[df["perf_label"] == perf_filter]
-
-    # Affichage — colonnes claires, dénominateur explicite
-    df_display = df[[
-        "technicien", "equipe",
-        "facturable", "non_facturable", "base_calcul",
-        "productivite", "perf_label", "nb_jours",
-    ]].copy()
-
-    df_display = df_display.rename(columns={
-        "technicien":    "Technicien",
-        "equipe":        "Équipe",
-        "facturable":    "Fact. (h)",
-        "non_facturable": "Non Fact. (h)",
-        "base_calcul":   "Base calcul (h)",
-        "productivite":  "Productivité",
-        "perf_label":    "Performance",
-        "nb_jours":      "Jours",
-    })
+    df["Productivité"] = df["productivite"].apply(lambda v: f"{v:.1%}")
+    df["Perf"]         = df["perf_label"]
+    df["Fact (h)"]     = df["facturable"].round(1)
+    df["Non-Fact (h)"] = df["non_facturable"].round(1)
 
     def _color_perf(val):
-        mapping = {
-            "Excellent": f"background-color:{_COULEUR_EXCELLENT};color:white",
-            "Bon":       f"background-color:{_COULEUR_BON};color:white",
-            "Faible":    f"background-color:{_COULEUR_FAIBLE};color:white",
-            "Critique":  f"background-color:{_COULEUR_CRITIQUE};color:white",
-        }
-        return mapping.get(val, "")
+        m = {"Excellent": _COULEUR_EXCELLENT, "Bon": _COULEUR_BON,
+             "Faible": _COULEUR_FAIBLE, "Critique": _COULEUR_CRITIQUE}
+        c = m.get(val, "#888")
+        return f"background-color:{c};color:white;font-weight:bold"
 
-    styled = (
-        df_display.style
-        .format({
-            "Fact. (h)":      "{:.1f}",
-            "Non Fact. (h)":  "{:.1f}",
-            "Base calcul (h)": "{:.1f}",
-            "Productivité":   "{:.1%}",
-        })
-        .applymap(_color_perf, subset=["Performance"])
-    )
+    display = df[["technicien","equipe","Productivité","Perf","Fact (h)","Non-Fact (h)","nb_jours"]].rename(
+        columns={"technicien":"Technicien","equipe":"Équipe","nb_jours":"Jours"})
 
+    styled = display.style.applymap(_color_perf, subset=["Perf"])
     st.dataframe(styled, use_container_width=True, height=400)
-    st.caption(
-        f"{len(df_display)} technicien(s) affiché(s) — "
-        f"Productivité = Fact. / Base calcul (heures Allouées exclues)"
-    )
+    st.caption(f"{len(display)} technicien(s) affiché(s)")
 
-    csv = df_display.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        label="⬇️ Exporter CSV",
-        data=csv,
-        file_name="productivite_techniciens.csv",
-        mime="text/csv",
-        key="prod_export_csv",
-    )
 
-def _render_simulateur_global(result: ProductiviteResult) -> None:
-    """
-    Section 6 — Simulateur productivité globale dynamique.
-    Sélection d'équipes → recalcul du KPI global en temps réel.
-    """
-    st.markdown("### 🎛️ Simulateur Productivité Globale")
-    st.caption(
-        "Sélectionnez les équipes à inclure dans le calcul — "
-        "utile pour exclure le CRC ou toute autre équipe du périmètre."
-    )
+def _render_analyse_equipe(result: ProductiviteResult) -> None:
+    st.markdown("### 🔬 Analyse par Équipe — Impact sur la Productivité Globale")
 
+    df_em = result.par_equipe_mois.copy()
     df_eq = result.par_equipe.copy()
-    if df_eq.empty:
-        st.info("Pas de données équipes.")
+
+    if df_em.empty or df_eq.empty:
+        st.info("Données insuffisantes.")
         return
 
-    equipes_toutes = sorted(df_eq["equipe"].tolist())
+    equipes = sorted(df_eq["equipe"].unique().tolist())
+    eq_sel  = st.selectbox("Équipe à analyser", equipes, key="prod_eq_analyse")
 
-    # Identifier les équipes CRC connues par défaut
-    crc_keywords = ["remontage transmission", "crc"]
-    crc_default  = [
-        e for e in equipes_toutes
-        if any(k in e.lower() for k in crc_keywords)
-    ]
-
-    col_sel, col_kpi = st.columns([2, 1])
-
-    with col_sel:
-        equipes_sel = st.multiselect(
-            "Équipes incluses dans le calcul",
-            options=equipes_toutes,
-            default=[e for e in equipes_toutes if e not in crc_default],
-            key="prod_sim_equipes",
-        )
-
-    # Recalcul dynamique sur les équipes sélectionnées
-    if not equipes_sel:
-        with col_kpi:
-            st.warning("Sélectionnez au moins une équipe.")
+    sub = df_em[df_em["equipe"] == eq_sel].sort_values("mois")
+    if sub.empty:
+        st.info("Aucune donnée pour cette équipe.")
         return
 
-    df_sel      = df_eq[df_eq["equipe"].isin(equipes_sel)]
-    f_sel       = df_sel["facturable"].sum()
-    nf_sel      = df_sel["non_facturable"].sum()
-    denom_sel   = f_sel + nf_sel
-    prod_sel    = f_sel / denom_sel if denom_sel > 0 else 0.0
-
-    # Productivité de référence (toutes équipes)
-    f_all     = df_eq["facturable"].sum()
-    nf_all    = df_eq["non_facturable"].sum()
-    prod_all  = f_all / (f_all + nf_all) if (f_all + nf_all) > 0 else 0.0
-    delta     = prod_sel - prod_all
-
-    with col_kpi:
-        st.metric(
-            label="🎯 Productivité périmètre sélectionné",
-            value=_pct(prod_sel),
-            delta=f"{delta:+.1%} vs toutes équipes",
+    col1, col2 = st.columns(2)
+    with col1:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=sub["mois"], y=sub["productivite"] * 100,
+            mode="lines+markers",
+            line=dict(color="#FFCD11", width=2),
+            marker=dict(size=8),
+            name=eq_sel,
+        ))
+        fig.update_layout(
+            title=f"Évolution mensuelle — {eq_sel}",
+            height=280, yaxis_ticksuffix="%", yaxis_range=[0, 100],
+            plot_bgcolor="#0d0d0f", paper_bgcolor="#0d0d0f",
+            font_color="#d8dce0", margin=dict(t=40, b=20),
         )
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Détail des équipes incluses / exclues
-    df_eq["statut"] = df_eq["equipe"].apply(
-        lambda e: "✅ Incluse" if e in equipes_sel else "❌ Exclue"
-    )
-    df_eq["contribution"] = (
-        df_eq["facturable"] / df_eq["non_facturable"].add(df_eq["facturable"]).replace(0, float("nan"))
-    ).fillna(0)
+    with col2:
+        # Impact si retrait de cette équipe
+        eq_data  = df_eq[df_eq["equipe"] == eq_sel].iloc[0]
+        ytd_fact = result.ytd_facturable
+        ytd_nf   = result.ytd_non_facturable
+        ytd_prod = result.ytd_productivite
 
-    df_sim_display = df_eq[[
-        "statut", "equipe", "facturable", "non_facturable", "productivite"
-    ]].copy().rename(columns={
-        "statut":        "Statut",
-        "equipe":        "Équipe",
-        "facturable":    "Fact. (h)",
-        "non_facturable": "Non Fact. (h)",
-        "productivite":  "Productivité",
-    })
+        fact_sans  = ytd_fact - eq_data["facturable"]
+        nf_sans    = ytd_nf   - eq_data["non_facturable"]
+        prod_sans  = fact_sans / (fact_sans + nf_sans) if (fact_sans + nf_sans) > 0 else 0
+        delta      = prod_sans - ytd_prod
 
-    def _color_statut(val):
-        if val == "✅ Incluse":
-            return "background-color:#d4edda;color:#155724"
-        return "background-color:#f8d7da;color:#721c24"
+        couleur_delta = _COULEUR_EXCELLENT if delta > 0 else _COULEUR_CRITIQUE
 
-    styled = (
-        df_sim_display.style
-        .format({"Fact. (h)": "{:.1f}", "Non Fact. (h)": "{:.1f}", "Productivité": "{:.1%}"})
-        .applymap(_color_statut, subset=["Statut"])
-    )
-    st.dataframe(styled, use_container_width=True, height=350)
-
-
-def _render_analyse_proxy(result: ProductiviteResult) -> None:
-    """
-    Section 7 — Analyse corrélation & impact équipe proxy.
-    Corrélation productivité équipe vs global + impact si retrait.
-    """
-    import numpy as np
-
-    st.markdown("### 🔬 Analyse Équipe Proxy")
-    st.caption(
-        "Quelle équipe tire (ou plombe) la productivité globale ? "
-        "Corrélation mensuelle + impact simulé si retrait."
-    )
-
-    # ── Note méthodologique ───────────────────────────────────────────
-    with st.expander("📖 Méthodologie — comment lire cette analyse ?", expanded=False):
-        st.markdown("""
-**Deux indicateurs complémentaires sont calculés :**
-
----
-
-**1. Corrélation mensuelle (colonne "Corrélation vs global")**
-
-Pour chaque équipe, on mesure si sa productivité mensuelle évolue dans le **même sens** que la productivité globale de l'atelier.
-
-- Méthode : corrélation de Pearson entre la série mensuelle de l'équipe et la série mensuelle globale
-- **+1.00** : l'équipe monte et descend exactement comme le global → elle *suit* (ou *tire*) la tendance
-- **-1.00** : l'équipe descend quand le global monte → comportement inverse
-- **None** : l'équipe a une productivité constante (ex: 100% tous les mois) → variance nulle, corrélation impossible à calculer
-
-> ⚠️ **Limite importante** : une corrélation n'est statistiquement fiable qu'à partir d'environ **12 points** (12 mois). 
-> En dessous de 6 mois, les valeurs sont indicatives uniquement — elles reflètent la tendance observée 
-> mais ne permettent pas de conclure avec certitude.
-
----
-
-**2. Impact si retrait (colonne "Impact si retrait")**
-
-On simule le retrait de chaque équipe du périmètre et on recalcule la productivité globale sans elle.
-
-- **Delta positif (vert)** : retirer cette équipe *améliore* la prod globale → l'équipe **plombe** le résultat
-- **Delta négatif (rouge)** : retirer cette équipe *dégrade* la prod globale → l'équipe **tire** le résultat vers le haut
-- Formule : `(Σ Fact. sans équipe) / (Σ Fact. + Σ Non Fact. sans équipe)`
-
-> ✅ Cet indicateur est **100% fiable** quel que soit le nombre de mois — c'est un calcul YTD exact, pas une estimation statistique.
-
----
-
-**En résumé pour expliquer à votre manager :**
-> *"La corrélation mesure si une équipe suit la même tendance que l'atelier mois par mois. 
-> L'impact mesure concrètement combien de points de productivité on gagnerait ou perdrait 
-> si on retirait cette équipe du périmètre. L'impact est le chiffre le plus solide."*
-        """)
-
-    df_em  = result.par_equipe_mois.copy()   # equipe × mois
-    df_eq  = result.par_equipe.copy()         # equipe YTD
-    df_m   = result.par_mois.copy()           # global × mois
-
-    if df_em.empty or df_m.empty:
-        st.info("Pas assez de données pour l'analyse proxy.")
-        return
-
-    # ── Warning fiabilité corrélation ─────────────────────────────────
-    nb_mois = len(df_m)
-    if nb_mois < 6:
-        st.warning(
-            f"⚠️ **Fiabilité limitée des corrélations** — seulement **{nb_mois} mois** de données disponibles. "
-            f"Il faut au moins **6 mois** pour une corrélation indicative, **12 mois** pour une corrélation fiable. "
-            f"Privilégiez la colonne **'Impact si retrait'** qui est un calcul exact indépendant du nombre de mois."
-        )
-    elif nb_mois < 12:
-        st.info(
-            f"ℹ️ **{nb_mois} mois** de données — corrélations indicatives. "
-            f"La fiabilité statistique sera atteinte à 12 mois."
-        )
-
-    # ── Corrélation mensuelle équipe vs global ────────────────────────
-    pivot = df_em.pivot_table(
-        index="mois", columns="equipe", values="productivite"
-    ).fillna(0)
-    pivot = pivot.join(df_m.set_index("mois")["productivite"].rename("_global"))
-
-    corr_series = pivot.corr()["_global"].drop("_global").sort_values(ascending=False)
-    corr_df = corr_series.reset_index()
-    corr_df.columns = ["equipe", "correlation"]
-    corr_df = corr_df.dropna()
-
-    # ── Impact retrait équipe sur prod YTD ───────────────────────────
-    f_all  = df_eq["facturable"].sum()
-    nf_all = df_eq["non_facturable"].sum()
-    prod_all = f_all / (f_all + nf_all) if (f_all + nf_all) > 0 else 0.0
-
-    impacts = []
-    for _, row in df_eq.iterrows():
-        f_sans  = f_all  - row["facturable"]
-        nf_sans = nf_all - row["non_facturable"]
-        prod_sans = f_sans / (f_sans + nf_sans) if (f_sans + nf_sans) > 0 else 0.0
-        impacts.append({
-            "equipe":     row["equipe"],
-            "prod_sans":  prod_sans,
-            "delta":      prod_sans - prod_all,
-        })
-
-    impact_df = pd.DataFrame(impacts).sort_values("delta", ascending=False)
-
-    # ── Fusion corrélation + impact ───────────────────────────────────
-    proxy_df = corr_df.merge(impact_df, on="equipe", how="outer")
-    proxy_df["prod_ytd"] = proxy_df["equipe"].map(
-        df_eq.set_index("equipe")["productivite"]
-    )
-
-    # ── Affichage côte à côte ─────────────────────────────────────────
-    col_corr, col_impact = st.columns(2)
-
-    with col_corr:
-        st.markdown("#### 📊 Corrélation vs productivité globale")
-        st.caption("Calculée sur les mois disponibles (mensuel)")
-
-        if corr_df.empty:
-            st.info("Pas assez de mois pour calculer une corrélation.")
-        else:
-            corr_sorted = corr_df.sort_values("correlation", ascending=True)
-            equipes_c   = corr_sorted["equipe"].tolist()
-            corr_vals   = [round(v, 3) for v in corr_sorted["correlation"].tolist()]
-            colors_c    = [
-                "rgba(40,167,69,0.7)"  if v >= 0.7  else
-                "rgba(253,126,20,0.7)" if v >= 0.3  else
-                "rgba(220,53,69,0.7)"
-                for v in corr_vals
-            ]
-
-            html_corr = f"""
-            <div style="position:relative;height:{max(250, len(equipes_c)*38)}px">
-              <canvas id="chartCorr"></canvas>
+        st.markdown(
+            f"""<div style="background:#1a1a2e;border-radius:6px;padding:16px;margin-top:8px">
+            <div style="font-size:12px;color:#888;margin-bottom:8px">
+            Impact si retrait de <b style="color:#FFCD11">{eq_sel}</b></div>
+            <div style="display:flex;gap:24px">
+              <div>
+                <div style="font-size:10px;color:#888">Prod. actuelle</div>
+                <div style="font-size:22px;font-weight:700;color:{_couleur_prod(ytd_prod)}">{ytd_prod:.1%}</div>
+              </div>
+              <div style="font-size:22px;color:#444;padding-top:12px">→</div>
+              <div>
+                <div style="font-size:10px;color:#888">Sans cette équipe</div>
+                <div style="font-size:22px;font-weight:700;color:{_couleur_prod(prod_sans)}">{prod_sans:.1%}</div>
+              </div>
+              <div>
+                <div style="font-size:10px;color:#888">Delta</div>
+                <div style="font-size:22px;font-weight:700;color:{couleur_delta}">
+                {'+' if delta >= 0 else ''}{delta:.1%}</div>
+              </div>
             </div>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-            <script>
-            new Chart(document.getElementById('chartCorr'), {{
-              type: 'bar',
-              data: {{
-                labels: {equipes_c},
-                datasets: [{{
-                  label: 'Corrélation',
-                  data: {corr_vals},
-                  backgroundColor: {colors_c},
-                  borderRadius: 4,
-                }}]
-              }},
-              options: {{
-                indexAxis: 'y',
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {{ legend: {{ display: false }} }},
-                scales: {{
-                  x: {{ min: -1, max: 1,
-                         ticks: {{ callback: v => v.toFixed(1) }} }}
-                }}
-              }}
-            }});
-            </script>
-            """
-            st.components.v1.html(html_corr, height=max(270, len(equipes_c) * 40))
-
-    with col_impact:
-        st.markdown("#### ⚖️ Impact si équipe retirée du périmètre")
-        st.caption(f"Référence : productivité globale YTD = {_pct(prod_all)}")
-
-        impact_sorted = impact_df.sort_values("delta", ascending=True)
-        equipes_i     = impact_sorted["equipe"].tolist()
-        delta_vals    = [round(v * 100, 2) for v in impact_sorted["delta"].tolist()]
-        colors_i      = [
-            "rgba(40,167,69,0.7)"  if v > 0 else
-            "rgba(220,53,69,0.7)"
-            for v in delta_vals
-        ]
-
-        html_impact = f"""
-        <div style="position:relative;height:{max(250, len(equipes_i)*38)}px">
-          <canvas id="chartImpact"></canvas>
-        </div>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-        <script>
-        new Chart(document.getElementById('chartImpact'), {{
-          type: 'bar',
-          data: {{
-            labels: {equipes_i},
-            datasets: [{{
-              label: 'Delta productivité (%)',
-              data: {delta_vals},
-              backgroundColor: {colors_i},
-              borderRadius: 4,
-            }}]
-          }},
-          options: {{
-            indexAxis: 'y',
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {{
-              legend: {{ display: false }},
-              tooltip: {{
-                callbacks: {{
-                  label: ctx => (ctx.raw > 0 ? '+' : '') + ctx.raw + '%'
-                }}
-              }}
-            }},
-            scales: {{
-              x: {{
-                ticks: {{ callback: v => (v > 0 ? '+' : '') + v + '%' }}
-              }}
-            }}
-          }}
-        }});
-        </script>
-        """
-        st.components.v1.html(html_impact, height=max(270, len(equipes_i) * 40))
-
-    # ── Tableau récapitulatif proxy ───────────────────────────────────
-    st.markdown("#### 📋 Tableau récapitulatif")
-
-    proxy_display = proxy_df[[
-        "equipe", "prod_ytd", "correlation", "delta"
-    ]].copy().rename(columns={
-        "equipe":      "Équipe",
-        "prod_ytd":    "Prod. YTD",
-        "correlation": "Corrélation vs global",
-        "delta":       "Impact si retrait",
-    }).sort_values("Impact si retrait", ascending=True)
-
-    def _color_delta(val):
-        if pd.isna(val):
-            return ""
-        if val > 0.02:
-            return f"background-color:{_COULEUR_CRITIQUE};color:white"   # retire → améliore → équipe plombe
-        elif val > 0:
-            return "background-color:#fff3cd;color:#856404"
-        elif val < -0.02:
-            return f"background-color:{_COULEUR_EXCELLENT};color:white"  # retire → détériore → équipe tire
-        return ""
-
-    def _color_corr(val):
-        if pd.isna(val):
-            return ""
-        if val >= 0.7:
-            return f"background-color:{_COULEUR_EXCELLENT};color:white"
-        elif val >= 0.3:
-            return "background-color:#fff3cd;color:#856404"
-        elif val < 0:
-            return f"background-color:{_COULEUR_FAIBLE};color:white"
-        return ""
-
-    styled_proxy = (
-        proxy_display.style
-        .format({
-            "Prod. YTD":            "{:.1%}",
-            "Corrélation vs global": lambda v: f"{v:.2f}" if pd.notna(v) else "—",
-            "Impact si retrait":     lambda v: f"{v:+.1%}" if pd.notna(v) else "—",
-        })
-        .applymap(_color_delta, subset=["Impact si retrait"])
-        .applymap(_color_corr,  subset=["Corrélation vs global"])
-    )
-    st.dataframe(styled_proxy, use_container_width=True)
-
-    # ── Interprétation automatique ────────────────────────────────────
-    st.markdown("#### 💡 Interprétation")
-
-    # Équipe qui tire le plus (retrait dégrade le plus)
-    tire = impact_df.loc[impact_df["delta"].idxmin()]
-    # Équipe qui plombe le plus (retrait améliore le plus)
-    plombe = impact_df.loc[impact_df["delta"].idxmax()]
-
-    col_i1, col_i2 = st.columns(2)
-    with col_i1:
-        st.success(
-            f"**🏆 Équipe locomotive : {tire['equipe']}**\n\n"
-            f"Sans elle, la productivité globale baisserait de **{abs(tire['delta']):.1%}** "
-            f"({_pct(prod_all)} → {_pct(tire['prod_sans'])})."
-        )
-    with col_i2:
-        st.error(
-            f"**⚠️ Équipe qui plombe : {plombe['equipe']}**\n\n"
-            f"Sans elle, la productivité globale monterait de **{plombe['delta']:.1%}** "
-            f"({_pct(prod_all)} → {_pct(plombe['prod_sans'])})."
+            <div style="font-size:10px;color:#555;margin-top:8px">
+            Fact: {eq_data['facturable']:,.0f}h | Non-fact: {eq_data['non_facturable']:,.0f}h
+            </div></div>""",
+            unsafe_allow_html=True,
         )
