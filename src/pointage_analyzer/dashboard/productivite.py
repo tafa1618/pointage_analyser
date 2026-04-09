@@ -57,6 +57,13 @@ def _pct(v: float) -> str:
     return f"{v:.1%}"
 
 
+def _filter_by_year(pt_harm: pd.DataFrame, year: int) -> pd.DataFrame:
+    """Filtre le DataFrame pointage sur l'année sélectionnée."""
+    date_col = "date_saisie" if "date_saisie" in pt_harm.columns else "Saisie heures - Date"
+    dates = pd.to_datetime(pt_harm[date_col], errors="coerce")
+    return pt_harm[dates.dt.year == year].copy()
+
+
 def _filter_rolling_12m(pt_harm: pd.DataFrame, year: int) -> tuple[pd.DataFrame, str, str]:
     """
     Retourne les données des 12 mois glissants se terminant au dernier
