@@ -57,11 +57,37 @@ def _pct(v: float) -> str:
     return f"{v:.1%}"
 
 
-def _filter_by_year(pt_harm: pd.DataFrame, year: int) -> pd.DataFrame:
-    """Filtre le DataFrame pointage sur l'année sélectionnée."""
+def _filter_rolling_12m(pt_harm: pd.DataFrame, year: int) -> tuple[pd.DataFrame, str, str]:
+    """
+    Retourne les données des 12 mois glissants se terminant au dernier
+    mois disponible de l'année sélectionnée.
+
+    Ex: année 2026, données jusqu'en mars → Apr 2025 → Mar 2026
+    Ex: année 2025, données jusqu'en déc  → Jan 2025 → Déc 2025
+
+    Returns:
+        (df_filtré, date_debut_str, date_fin_str)
+    """
     date_col = "date_saisie" if "date_saisie" in pt_harm.columns else "Saisie heures - Date"
     dates = pd.to_datetime(pt_harm[date_col], errors="coerce")
-    return pt_harm[dates.dt.year == year].copy()
+
+    # Dernier mois disponible dans l'année sélectionnée
+    dates_annee = dates[dates.dt.year == year].dropna()
+    if dates_annee.empty:
+        return pd.DataFrame(), "", ""
+
+    dernier_mois = dates_annee.max().to_period("M")
+    premier_mois = dernier_mois - 11  # 12 mois glissants
+
+    # Filtre sur la période rolling
+    mois_series = dates.dt.to_period("M")
+    mask = (mois_series >= premier_mois) & (mois_series <= dernier_mois)
+
+    df_filtered = pt_harm[mask.fillna(False)].copy()
+    debut = premier_mois.start_time.strftime("%Y-%m-%d")
+    fin   = dernier_mois.end_time.strftime("%Y-%m-%d")
+
+    return df_filtered, debut, fin
 
 
 def render_productivite_tab(productivite: ProductiviteResult, pt_harm: pd.DataFrame) -> None:
@@ -86,20 +112,34 @@ def render_productivite_tab(productivite: ProductiviteResult, pt_harm: pd.DataFr
             f"disponible de {annee_sel}. Seuils CAT : Emerging ≥78% · Advanced ≥82% · Excellent ≥85%"
         )
 
-    # Recalcul sur l'année sélectionnée
-    pt_filtered = _filter_by_year(pt_harm, annee_sel)
-    if pt_filtered.empty:
+    # ── Données année sélectionnée (pour tout sauf le KPI global) ────
+    pt_annee = _filter_by_year(pt_harm, annee_sel)
+    if pt_annee.empty:
         st.warning(f"Aucune donnée pour {annee_sel}.")
         return
 
     builder = ProductiviteBuilder()
-    result  = builder.build(pt_filtered)
+    result  = builder.build(pt_annee)
 
     if result.ytd_facturable == 0 and result.ytd_non_facturable == 0:
         st.warning("Données insuffisantes pour calculer la productivité.")
         return
 
-    _render_kpi_cards(result, annee_sel)
+    # ── KPI global Rolling 12M (calcul séparé) ───────────────────────
+    pt_rolling, debut_rolling, fin_rolling = _filter_rolling_12m(pt_harm, annee_sel)
+    if not pt_rolling.empty:
+        result_rolling = builder.build(pt_rolling)
+        prod_rolling   = result_rolling.ytd_productivite
+        fact_rolling   = result_rolling.ytd_facturable
+        nf_rolling     = result_rolling.ytd_non_facturable
+    else:
+        prod_rolling = result.ytd_productivite
+        fact_rolling = result.ytd_facturable
+        nf_rolling   = result.ytd_non_facturable
+        debut_rolling = result.periode_debut
+        fin_rolling   = result.periode_fin
+
+    _render_kpi_cards(prod_rolling, fact_rolling, nf_rolling, debut_rolling, fin_rolling, annee_sel)
     st.divider()
     _render_evolution_mensuelle(result)
     st.divider()
@@ -118,30 +158,35 @@ def render_productivite_tab(productivite: ProductiviteResult, pt_harm: pd.DataFr
 # KPI CARDS
 # ══════════════════════════════════════════════════════════════════════
 
-def _render_kpi_cards(result: ProductiviteResult, annee: int) -> None:
-    couleur = _couleur(result.ytd_productivite)
-    niveau  = _label(result.ytd_productivite)
+def _render_kpi_cards(
+    prod_rolling: float,
+    fact_rolling: float,
+    nf_rolling: float,
+    debut: str,
+    fin: str,
+    annee: int,
+) -> None:
+    couleur = _couleur(prod_rolling)
+    niveau  = _label(prod_rolling)
 
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3 = st.columns(3)
     m1.markdown(
         f"""<div style="background:#1a1a2e;border-left:4px solid {couleur};
         border-radius:4px;padding:12px 16px">
         <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:1px">
         Productivité Rolling 12M {annee}</div>
         <div style="font-size:32px;font-weight:700;color:{couleur}">
-        {result.ytd_productivite:.1%}</div>
+        {prod_rolling:.1%}</div>
         <div style="font-size:11px;font-weight:600;color:{couleur};margin-top:2px">{niveau}</div>
-        <div style="font-size:10px;color:#555;margin-top:2px">{result.periode_debut} → {result.periode_fin}</div>
+        <div style="font-size:10px;color:#555;margin-top:2px">{debut} → {fin}</div>
         </div>""",
         unsafe_allow_html=True,
     )
-    m2.metric("Heures facturables",     f"{result.ytd_facturable:,.0f}h")
-    m3.metric("Heures non facturables", f"{result.ytd_non_facturable:,.0f}h")
-    m4.metric("Techniciens",            f"{result.nb_techniciens}")
-    m5.metric("Équipes",                f"{result.nb_equipes}")
+    m2.metric("Heures facturables (12M)",     f"{fact_rolling:,.0f}h")
+    m3.metric("Heures non facturables (12M)", f"{nf_rolling:,.0f}h")
 
-    # Barre de progression vers les seuils
-    p = result.ytd_productivite * 100
+    # Barre de progression
+    p = prod_rolling * 100
     st.markdown(
         f"""<div style="margin:10px 0 4px;display:flex;justify-content:space-between;font-size:10px;color:#666">
         <span>0%</span>
@@ -150,12 +195,7 @@ def _render_kpi_cards(result: ProductiviteResult, annee: int) -> None:
         <span style="color:{_C_EXCELLENT}">Excellent 85%</span>
         <span>100%</span></div>
         <div style="height:8px;background:#222;border-radius:4px;overflow:hidden">
-          <div style="height:100%;width:{min(p,100):.1f}%;background:{couleur};border-radius:4px;transition:width .5s"></div>
-        </div>
-        <div style="margin-top:2px;display:flex;gap:0">
-          <div style="width:78%;border-right:1px solid {_C_EMERGING};height:6px"></div>
-          <div style="width:4%;border-right:1px solid {_C_ADVANCED};height:6px"></div>
-          <div style="width:3%;border-right:1px solid {_C_EXCELLENT};height:6px"></div>
+          <div style="height:100%;width:{min(p,100):.1f}%;background:{couleur};border-radius:4px"></div>
         </div>""",
         unsafe_allow_html=True,
     )
