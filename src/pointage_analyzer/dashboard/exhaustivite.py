@@ -10,7 +10,10 @@ import numpy as np
 import plotly.graph_objects as go
 from io import BytesIO
 
-from pointage_analyzer.utils.senegal_holidays import nb_jours_ouvres as _nb_jours_ouvres
+from pointage_analyzer.utils.senegal_holidays import (
+    nb_jours_ouvres as _nb_jours_ouvres,
+    get_holidays_range as _get_feries,
+)
 
 from pointage_analyzer.pipeline.exhaustivite_builder import (
     ExhaustiviteBuilder,
@@ -374,10 +377,7 @@ def _build_excel_engine(
 
             techniciens     = list(pivot_presence.index)
             nb_jours_ouvres = _nb_jours_ouvres(tous_jours[0], tous_jours[-1])
-
-    # Fériés sur la plage pour coloriage
-    from pointage_analyzer.utils.senegal_holidays import get_holidays_range as _get_feries
-    feries = _get_feries(tous_jours[0], tous_jours[-1])
+            feries          = _get_feries(tous_jours[0], tous_jours[-1])
 
             ws = writer.book.create_sheet(title=equipe[:31])
 
@@ -388,6 +388,7 @@ def _build_excel_engine(
                 tous_jours=tous_jours,
                 pivot_presence=pivot_presence,
                 nb_jours_ouvres=nb_jours_ouvres,
+                feries=feries,
                 hdr_color=NAVY,
                 border=border,
                 BLEU=BLEU, VERT=VERT, ROUGE=ROUGE, GRIS=GRIS,
@@ -447,6 +448,7 @@ def _write_sheet(
     tous_jours: pd.DatetimeIndex,
     pivot_presence: pd.DataFrame,
     nb_jours_ouvres: int,
+    feries: set,
     hdr_color: str,
     border,
     BLEU, VERT, ROUGE, GRIS, JAUNE, ORANGE,
