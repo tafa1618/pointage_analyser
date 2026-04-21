@@ -397,13 +397,16 @@ def _build_excel_engine(
 
             # Prépare les lignes pour TOTAL
             for tech in techniciens:
-                presents = int(pivot_presence.loc[tech].sum())
-                taux = round(presents / nb_jours_ouvres, 4) if nb_jours_ouvres > 0 else 0
+                presents       = int(pivot_presence.loc[tech].sum())
+                row_p          = pivot_presence.loc[tech]
+                jours_p        = row_p[row_p == 1].index
+                nb_ouvres_tech = _nb_jours_ouvres(jours_p[0], jours_p[-1]) if len(jours_p) > 0 else nb_jours_ouvres
+                taux           = round(presents / nb_ouvres_tech, 4) if nb_ouvres_tech > 0 else 0
                 total_rows.append({
                     "Équipe": equipe,
                     "Technicien": tech,
                     "Jours présents": presents,
-                    "Jours ouvrés": nb_jours_ouvres,
+                    "Jours ouvrés": nb_ouvres_tech,
                     "Taux présence": taux,
                 })
 
@@ -506,6 +509,16 @@ def _write_sheet(
 
         presents = 0
 
+        # ── Dénominateur par technicien (effectif réel au jour le jour) ──
+        # Jours ouvrés entre le premier et le dernier pointage du tech
+        # dans la période → aligne avec la méthode du support CAT
+        row_pivot    = pivot_presence.loc[tech]
+        jours_pointe = row_pivot[row_pivot == 1].index
+        if len(jours_pointe) > 0:
+            nb_jours_ouvres_tech = _nb_jours_ouvres(jours_pointe[0], jours_pointe[-1])
+        else:
+            nb_jours_ouvres_tech = nb_jours_ouvres  # fallback : dénominateur équipe
+
         for c_idx, jour in enumerate(tous_jours, start=2):
             cell           = ws.cell(row=r_idx, column=c_idx)
             cell.alignment = Alignment(horizontal="center")
@@ -531,12 +544,12 @@ def _write_sheet(
             else:
                 cell.fill = PatternFill("solid", fgColor=ROUGE)
 
-        # Colonnes résumé
-        taux = round(presents / nb_jours_ouvres, 4) if nb_jours_ouvres > 0 else 0
+        # Colonnes résumé — dénominateur individuel par technicien
+        taux = round(presents / nb_jours_ouvres_tech, 4) if nb_jours_ouvres_tech > 0 else 0
         for i, (val, label) in enumerate([
-            (presents,        "Jours présents"),
-            (nb_jours_ouvres, "Jours ouvrés"),
-            (taux,            "Taux présence"),
+            (presents,             "Jours présents"),
+            (nb_jours_ouvres_tech, "Jours ouvrés"),
+            (taux,                 "Taux présence"),
         ]):
             col_idx        = res_start + i
             cell           = ws.cell(row=r_idx, column=col_idx)
